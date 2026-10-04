@@ -1,0 +1,193 @@
+@import 'tailwindcss';
+
+@source '../../vendor/laravel/framework/src/Illuminate/Pagination/resources/views/*.blade.php';
+@source '../../storage/framework/views/*.php';
+
+/* Dark mode follows the `dark` class on <html> (set in layouts.app) rather than
+   the OS preference, so the in-app toggle always wins. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+    --font-sans: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
+        'Segoe UI Symbol', 'Noto Color Emoji';
+
+    /* OpenAI green: the single accent in an otherwise neutral surface set. */
+    --color-accent: #10a37f;
+}
+
+/* ---------------------------------------------------------------------
+   Thin, neutral scrollbars for the transcript and the sidebar list.
+   --------------------------------------------------------------------- */
+.whale-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(13 13 13 / 0.2) transparent;
+}
+
+.whale-scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+.whale-scroll::-webkit-scrollbar-thumb {
+    border-radius: 9999px;
+    background: rgb(13 13 13 / 0.2);
+}
+
+.dark .whale-scroll {
+    scrollbar-color: rgb(255 255 255 / 0.2) transparent;
+}
+
+.dark .whale-scroll::-webkit-scrollbar-thumb {
+    background: rgb(255 255 255 / 0.2);
+}
+
+/* ---------------------------------------------------------------------
+   Assistant markdown (rendered through marked + DOMPurify client-side).
+   Scoped to .prose-md so plain user bubbles stay untouched.
+   --------------------------------------------------------------------- */
+.prose-md {
+    @apply text-[15px] leading-7 text-[#0d0d0d] dark:text-[#ececec];
+}
+
+.prose-md > *:first-child {
+    @apply mt-0;
+}
+
+.prose-md > *:last-child {
+    @apply mb-0;
+}
+
+.prose-md p {
+    @apply my-2;
+}
+
+.prose-md h1,
+.prose-md h2,
+.prose-md h3,
+.prose-md h4 {
+    @apply mb-2 mt-5 font-semibold text-[#0d0d0d] dark:text-[#ececec];
+}
+
+.prose-md h1 {
+    @apply text-lg;
+}
+
+.prose-md h2 {
+    @apply text-base;
+}
+
+.prose-md h3,
+.prose-md h4 {
+    @apply text-sm;
+}
+
+.prose-md ul,
+.prose-md ol {
+    @apply my-2 list-inside space-y-1 pl-1;
+}
+
+.prose-md ul {
+    @apply list-disc;
+}
+
+.prose-md ol {
+    @apply list-decimal;
+}
+
+.prose-md a {
+    @apply font-medium text-[#0e8f6e] underline decoration-1 underline-offset-2
+        hover:decoration-2 dark:text-[#10a37f];
+}
+
+.prose-md blockquote {
+    @apply my-2 border-l-2 border-black/10 pl-3 italic text-[#5d5d5d] dark:border-white/15 dark:text-[#b4b4b4];
+}
+
+.prose-md hr {
+    @apply my-4 border-black/10 dark:border-white/15;
+}
+
+.prose-md table {
+    @apply my-3 w-full border-collapse text-[13px];
+}
+
+.prose-md th,
+.prose-md td {
+    @apply border border-black/10 px-2.5 py-1.5 text-left dark:border-white/15;
+}
+
+.prose-md th {
+    @apply bg-[#f4f4f4] font-semibold dark:bg-white/[0.06];
+}
+
+.prose-md :not(pre) > code {
+    @apply rounded-md bg-black/[0.06] px-1.5 py-0.5 font-mono text-[0.85em] font-medium
+        text-[#0d0d0d] dark:bg-white/10 dark:text-[#ececec];
+}
+
+/* ---------------------------------------------------------------------
+   Code blocks with a toolbar (Copy / Open in sandbox) rendered by the
+   marked renderer. Buttons are wired through delegated events on the
+   scroll container because x-html content is not compiled by Alpine.
+   --------------------------------------------------------------------- */
+.code-block {
+    @apply my-3 overflow-hidden rounded-2xl ring-1 ring-black/10 dark:ring-white/15;
+}
+
+/* The language strip stays dark in both themes, like ChatGPT's code blocks. */
+.code-block__bar {
+    @apply flex items-center justify-between bg-[#2f2f2f] px-3.5 py-1.5 text-[11px] font-medium
+        text-[#b4b4b4];
+}
+
+.code-block__actions {
+    @apply flex items-center gap-1;
+}
+
+.code-block__actions button {
+    @apply rounded-md px-2 py-0.5 transition hover:bg-white/10 hover:text-white
+        focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent;
+}
+
+.code-block pre {
+    @apply overflow-x-auto bg-[#0d0d0d] p-3.5 text-[13px] leading-relaxed;
+}
+
+.code-block pre code {
+    @apply font-mono text-[#ececec];
+}
+
+/* The highlight.js theme also sets its own background and padding. */
+.code-block pre code.hljs {
+    @apply block overflow-visible bg-transparent p-0 text-[#ececec];
+}
+
+/* ---------------------------------------------------------------------
+   Shimmer skeleton for image generation and other pending media.
+   --------------------------------------------------------------------- */
+.animate-shimmer {
+    background: linear-gradient(
+        100deg,
+        rgba(148, 163, 184, 0.12) 20%,
+        rgba(148, 163, 184, 0.35) 50%,
+        rgba(148, 163, 184, 0.12) 80%
+    );
+    background-size: 200% 100%;
+    animation: shimmer-sweep 1.6s ease-in-out infinite;
+}
+
+@keyframes shimmer-sweep {
+    0% {
+        background-position: 200% 0;
+    }
+
+    100% {
+        background-position: -200% 0;
+    }
+}
+
+/* highlight.js fallback tokens are styled by the github-dark theme loaded
+   from the CDN; this keeps inline code readable if the CDN is unreachable. */
+.hljs {
+    @apply bg-transparent text-[#ececec];
+}
