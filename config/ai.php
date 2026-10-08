@@ -307,7 +307,7 @@ return [
                     'default' => env('GEMINI_MODEL'),
                 ],
                 'image' => [
-                    'default' => env('GEMINI_IMAGE_MODEL'),
+                    'default' => env('GEMINI_IMAGE_MODEL', 'gemini-3.1-flash-image'),
                 ],
                 'audio' => [
                     'default' => env('GEMINI_AUDIO_MODEL'),
@@ -407,7 +407,7 @@ return [
                     'default' => env('OPENAI_MODEL'),
                 ],
                 'image' => [
-                    'default' => env('OPENAI_IMAGE_MODEL'),
+                    'default' => env('OPENAI_IMAGE_MODEL', 'gpt-image-2'),
                 ],
                 'audio' => [
                     'default' => env('OPENAI_AUDIO_MODEL'),
@@ -515,7 +515,7 @@ return [
                     'default' => env('XAI_MODEL'),
                 ],
                 'image' => [
-                    'default' => env('XAI_IMAGE_MODEL'),
+                    'default' => env('XAI_IMAGE_MODEL', 'grok-imagine-image'),
                 ],
                 'audio' => [
                     'default' => env('XAI_AUDIO_MODEL'),

@@ -2,6 +2,7 @@
 
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\File;
 use Tests\TestCase;
 
 /*
@@ -115,4 +116,50 @@ function fakeGgufStringArray(array $values): string
     }
 
     return $bytes;
+}
+
+/**
+ * Point the models path at a scratch directory that is removed after the test.
+ *
+ * Declared here rather than in a single test file so every suite that writes
+ * model fixtures can reach it, whichever file is run on its own.
+ */
+function withModelsPath(string $path): void
+{
+    config(['whale.models_path' => $path]);
+
+    File::ensureDirectoryExists($path);
+
+    afterEach(fn () => File::deleteDirectory($path));
+}
+
+/**
+ * Write a synthetic safetensors file and return its path.
+ *
+ * The real format is an 8-byte little-endian header length, that many bytes of
+ * JSON describing the tensors, and then the data. The fixture omits the data
+ * entirely, because everything under test reads only the header.
+ *
+ * @param  array<string, mixed>  $metadata
+ * @param  list<string>  $tensors
+ */
+function fakeSafetensors(string $name, array $metadata = [], array $tensors = ['encoder/block/0/attn']): string
+{
+    $path = sys_get_temp_dir().'/whale-test-'.getmypid().'-'.substr(sha1($name.microtime(true)), 0, 8).'.safetensors';
+
+    $header = [];
+
+    foreach ($tensors as $index => $tensor) {
+        $header[$tensor] = ['dtype' => 'F32', 'shape' => [4], 'data_offsets' => [$index * 16, ($index + 1) * 16]];
+    }
+
+    if ($metadata !== []) {
+        $header['__metadata__'] = $metadata;
+    }
+
+    $json = json_encode($header, JSON_THROW_ON_ERROR);
+
+    file_put_contents($path, pack('P', strlen($json)).$json);
+
+    return $path;
 }

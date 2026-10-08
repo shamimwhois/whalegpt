@@ -3,19 +3,46 @@
 use App\Http\Controllers\ChatController;
 use App\Http\Controllers\ConversationController;
 use App\Http\Controllers\ConversationExportController;
+use App\Http\Controllers\CustomProviderController;
+use App\Http\Controllers\LiveCaptureController;
 use App\Http\Controllers\MediaGenerationController;
 use App\Http\Controllers\PromptEnhanceController;
 use App\Http\Controllers\StudioController;
 use App\Http\Controllers\WorkspaceController;
+use App\Http\Middleware\EnsureUserIsAuthenticated;
 use Illuminate\Support\Facades\Route;
 
-Route::get('chat/', [ChatController::class, 'index'])->name('chat.index');
+Route::get('chat/', [ChatController::class, 'index'])
+    ->middleware(EnsureUserIsAuthenticated::class)
+    ->name('chat.index');
 
 Route::get('chat/models', [ChatController::class, 'models'])->name('chat.models');
 
 Route::get('chat/local-models', [ChatController::class, 'localModels'])->name('chat.local-models');
 
 Route::get('chat/capabilities', [ChatController::class, 'capabilities'])->name('chat.capabilities');
+
+/*
+|--------------------------------------------------------------------------
+| Custom Providers
+|--------------------------------------------------------------------------
+|
+| The endpoints declared in WHALE_CUSTOM_PROVIDERS. Discovery asks an endpoint
+| what it serves, import keeps chosen models, and sync reconciles the two.
+|
+*/
+
+Route::get('chat/custom-providers', [CustomProviderController::class, 'index'])
+    ->name('chat.custom-providers');
+
+Route::get('chat/custom-providers/{provider}/models', [CustomProviderController::class, 'discover'])
+    ->name('chat.custom-providers.models');
+
+Route::post('chat/custom-providers/{provider}/import', [CustomProviderController::class, 'import'])
+    ->name('chat.custom-providers.import');
+
+Route::post('chat/custom-providers/{provider}/sync', [CustomProviderController::class, 'sync'])
+    ->name('chat.custom-providers.sync');
 
 Route::post('chat/enhance', PromptEnhanceController::class)
     ->middleware('throttle:15,1')
@@ -40,6 +67,29 @@ Route::post('chat/image/edit', [MediaGenerationController::class, 'editImage'])
 Route::post('chat/audio', [MediaGenerationController::class, 'generateAudio'])
     ->middleware('throttle:20,1')
     ->name('chat.audio');
+
+/*
+|--------------------------------------------------------------------------
+| Live Speech & Camera
+|--------------------------------------------------------------------------
+|
+| The composer records speech and shows the camera. Live speech is sent in
+| short clips so words appear while the user is still talking, which is why
+| the transcription limit is generous: it is a rate limit across many chunks,
+| not one upload.
+|
+*/
+
+Route::get('chat/capture', [LiveCaptureController::class, 'capabilities'])
+    ->name('chat.capture');
+
+Route::post('chat/transcribe', [LiveCaptureController::class, 'transcribe'])
+    ->middleware('throttle:60,1')
+    ->name('chat.transcribe');
+
+Route::post('chat/camera', [LiveCaptureController::class, 'describeScene'])
+    ->middleware('throttle:20,1')
+    ->name('chat.camera');
 
 Route::post('chat/ocr', [MediaGenerationController::class, 'ocr'])
     ->middleware('throttle:10,1')

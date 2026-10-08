@@ -3,6 +3,7 @@
 namespace App\Ai\Agents;
 
 use App\Ai\ResponseDepth;
+use App\Ai\ResponseLength;
 use App\Ai\ThinkingEffort;
 use Laravel\Ai\Contracts\Agent;
 use Laravel\Ai\Contracts\Conversational;
@@ -18,8 +19,8 @@ use Laravel\Ai\Promptable;
  * It exists because the package's ad-hoc agent cannot carry request options.
  * Reaching for reasoning effort, or a step budget, means the agent itself has
  * to expose them, so this class takes the turn's settings and answers to the
- * five questions TextGenerationOptions asks: instructions, messages, tools,
- * maxSteps and providerOptions.
+ * six questions TextGenerationOptions asks: instructions, messages, tools,
+ * maxSteps, maxTokens and providerOptions.
  */
 class ChatAgent implements Agent, Conversational, HasProviderOptions, HasTools
 {
@@ -36,6 +37,7 @@ class ChatAgent implements Agent, Conversational, HasProviderOptions, HasTools
         private readonly iterable $tools,
         private readonly ResponseDepth $depth,
         private readonly ThinkingEffort $effort,
+        private readonly ResponseLength $length = ResponseLength::Auto,
         private readonly ?string $model = null,
     ) {}
 
@@ -66,6 +68,20 @@ class ChatAgent implements Agent, Conversational, HasProviderOptions, HasTools
     public function maxSteps(): int
     {
         return $this->depth->maxSteps();
+    }
+
+    /**
+     * The output-token ceiling for this turn, or null to leave the provider's
+     * own default in place.
+     *
+     * The thinking budget is folded in here rather than at the call site,
+     * because it is only knowable once both settings are: Anthropic rejects a
+     * `max_tokens` at or below its extended-thinking budget, and an OpenAI
+     * reasoning model draws its internal tokens from the same allowance.
+     */
+    public function maxTokens(): ?int
+    {
+        return $this->length->cap(max($this->effort->anthropicBudget(), $this->effort->geminiBudget()));
     }
 
     /**

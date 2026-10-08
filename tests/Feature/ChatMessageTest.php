@@ -1,8 +1,12 @@
 <?php
 
-use App\Ai\Agents\ChatAgent;
+use App\Ai\Agents\AssistantAgent;
+use App\Models\User;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Laravel\Ai\Prompts\AgentPrompt;
 use Laravel\Ai\Responses\AgentResponse;
+
+uses(RefreshDatabase::class);
 
 /**
  * Reassemble the deltas of a given stream part type the way the chat UI does.
@@ -19,13 +23,14 @@ function streamedDeltas(string $content, string $type): string
 }
 
 test('chat screen is rendered from the named route', function () {
-    $this->get(route('chat.index'))
+    $this->actingAs(User::factory()->create())
+        ->get(route('chat.index'))
         ->assertOk()
         ->assertViewIs('chat.index');
 });
 
 test('a submitted message is streamed back as server sent events', function () {
-    ChatAgent::fake(['The response from the assistant.']);
+    AssistantAgent::fake(['The response from the assistant.']);
 
     $response = $this->post(route('chat.send'), [
         'message' => 'How do I create a migration?',
@@ -44,11 +49,11 @@ test('a submitted message is streamed back as server sent events', function () {
 
     expect(streamedDeltas($content, 'text-delta'))->toBe('The response from the assistant.');
 
-    ChatAgent::assertPrompted('How do I create a migration?');
+    AssistantAgent::assertPrompted('How do I create a migration?');
 });
 
 test('reasoning is streamed as its own parts', function () {
-    ChatAgent::fake([
+    AssistantAgent::fake([
         AgentResponse::fakeWithReasoning('Let me consider the options.', 'The answer.'),
     ]);
 
@@ -66,17 +71,17 @@ test('reasoning is streamed as its own parts', function () {
 });
 
 test('message input is required', function () {
-    ChatAgent::fake()->preventStrayPrompts();
+    AssistantAgent::fake()->preventStrayPrompts();
 
     $this->postJson(route('chat.send'), [])
         ->assertUnprocessable()
         ->assertJsonValidationErrors('message');
 
-    ChatAgent::assertNeverPrompted();
+    AssistantAgent::assertNeverPrompted();
 });
 
 test('message input is limited to the composer maxlength', function () {
-    ChatAgent::fake()->preventStrayPrompts();
+    AssistantAgent::fake()->preventStrayPrompts();
 
     // The composer's textarea carries maxlength="20000"; the server has to
     // reject the same length or a long paste would be accepted then refused.
@@ -88,15 +93,15 @@ test('message input is limited to the composer maxlength', function () {
         ->assertUnprocessable()
         ->assertJsonValidationErrors('message');
 
-    ChatAgent::assertNeverPrompted();
+    AssistantAgent::assertNeverPrompted();
 });
 
 test('a long prompt is accepted rather than silently truncated', function () {
-    ChatAgent::fake(['Here is a long answer.']);
+    AssistantAgent::fake(['Here is a long answer.']);
 
     $this->postJson(route('chat.send'), [
         'message' => str_repeat('a', 19999),
     ])->assertOk();
 
-    ChatAgent::assertPrompted(fn (AgentPrompt $prompt): bool => strlen($prompt->prompt) === 19999);
+    AssistantAgent::assertPrompted(fn (AgentPrompt $prompt): bool => strlen($prompt->prompt) === 19999);
 });

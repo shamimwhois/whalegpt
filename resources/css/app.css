@@ -11,8 +11,256 @@
     --font-sans: 'Instrument Sans', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
         'Segoe UI Symbol', 'Noto Color Emoji';
 
-    /* OpenAI green: the single accent in an otherwise neutral surface set. */
+    /* OpenAI green: the single accent in an otherwise neutral surface set.
+       It is the one colour that does not change between themes. */
     --color-accent: #10a37f;
+
+    /* Corner radii. `card` is the sidebar/history card, `pop` the menu shell. */
+    --radius-card: 0.875rem;
+    --radius-pop: 0.875rem;
+    --radius-vessel: 1.625rem;
+}
+
+/* ---------------------------------------------------------------------
+   Semantic tokens.
+
+   Every colour a template needs is declared once here for the light theme
+   and once in `.dark`, then mapped to a Tailwind colour name by the
+   `@theme inline` block below. That single indirection is what lets a
+   template write `bg-raised text-body border-line` with no `dark:` twin,
+   and it means a colour changes in exactly one place per theme.
+
+   The values live in plain custom properties rather than in `@theme`
+   because a static `@theme` entry is emitted into `:root` only, and could
+   therefore not be overridden per subtree.
+   --------------------------------------------------------------------- */
+:root {
+    /* Surfaces, from the page backdrop up to a floating popover. */
+    --surface-page: #ffffff;
+    --surface-sidebar: #f9f9f9;
+    --surface-sunken: #f4f4f4;
+    --surface-raised: #ffffff;
+    --surface-popover: #ffffff;
+
+    /* Text, four steps. Anything below `faint` is decorative only. */
+    --text-primary: #0d0d0d;
+    --text-secondary: #5d5d5d;
+    --text-muted: #8f8f8f;
+    --text-faint: #b4b4b4;
+
+    /* Hairlines, and the washes that sit on top of them. */
+    --hairline: rgb(13 13 13 / 0.08);
+    --hairline-strong: rgb(13 13 13 / 0.16);
+    --hover-wash: rgb(13 13 13 / 0.05);
+    --hover-wash-strong: rgb(13 13 13 / 0.08);
+}
+
+.dark {
+    --surface-page: #212121;
+    --surface-sidebar: #181818;
+    --surface-sunken: #303030;
+    --surface-raised: #303030;
+    --surface-popover: #303030;
+
+    --text-primary: #ececec;
+    --text-secondary: #b4b4b4;
+    --text-muted: #8f8f8f;
+    --text-faint: #6e6e6e;
+
+    --hairline: rgb(255 255 255 / 0.1);
+    --hairline-strong: rgb(255 255 255 / 0.18);
+    --hover-wash: rgb(255 255 255 / 0.06);
+    --hover-wash-strong: rgb(255 255 255 / 0.1);
+}
+
+/* `inline` keeps the var() reference inside the utility instead of copying
+   the resolved light value, which is what allows the `.dark` block above to
+   take effect. */
+@theme inline {
+    --color-page: var(--surface-page);
+    --color-sidebar: var(--surface-sidebar);
+    --color-sunken: var(--surface-sunken);
+    --color-raised: var(--surface-raised);
+    --color-popover: var(--surface-popover);
+
+    --color-ink: var(--text-primary);
+    --color-body: var(--text-secondary);
+    --color-muted: var(--text-muted);
+    --color-faint: var(--text-faint);
+
+    --color-line: var(--hairline);
+    --color-line-strong: var(--hairline-strong);
+    --color-wash: var(--hover-wash);
+    --color-wash-strong: var(--hover-wash-strong);
+}
+
+/* ---------------------------------------------------------------------
+   Appearance preferences.
+
+   Reading scale, transcript density and reduced motion are user-adjustable, so
+   they are declared as variables on the page root and written from the
+   preference controls. Declaring them here rather than in `@theme` is what lets
+   a slider change them at runtime: a `@theme` entry is baked into the
+   stylesheet, a plain custom property is not.
+
+   The values here are the defaults a user falls back to with nothing stored.
+   --------------------------------------------------------------------- */
+:root {
+    --reading-scale: 1;
+    --density-gap: 1.5rem;
+}
+
+/* Reading scale multiplies the transcript's base size rather than setting one,
+   so body copy, markdown and code all grow together. The 0.9375rem base is
+   15px — the size the transcript used before this was a preference — so the
+   default is pixel-identical to the old fixed value. The line height is a unitless
+   multiplier for the same reason: a rem line height would stay pinned while the
+   text around it grew. The clamp stops the slider pushing text out of the user's
+   bubble, or below a legible size. */
+.whale-reading {
+    font-size: calc(0.9375rem * clamp(0.875, var(--reading-scale), 1.375));
+    line-height: 1.75;
+}
+
+/* The message list reads its rhythm from the variable rather than carrying a
+   fixed `gap-6`, which is what makes the density slider take effect without a
+   rebuild. Scoped to the transcript on purpose: the sidebar and composer keep
+   their own fixed spacing, so neither can be squeezed to illegibility. */
+.whale-transcript {
+    gap: var(--density-gap);
+}
+
+/* Honour the OS setting regardless of what the app stored: a user who asked
+   the platform for less motion should never be overridden by a stale
+   localStorage value, so this deliberately sits outside the in-app toggle's
+   own cascade rather than being applied through a class. */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+.reduce-motion *,
+.reduce-motion *::before,
+.reduce-motion *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+}
+
+/* ---------------------------------------------------------------------
+   Interactive primitives. A row, a menu shell and a focus ring are repeated
+   on hundreds of elements; defining them once keeps the call sites down to
+   a single class.
+   --------------------------------------------------------------------- */
+.whale-row {
+    @apply flex w-full items-center gap-2 rounded-lg text-left text-[13px] text-body
+        transition-colors duration-100
+        focus-visible:bg-wash focus-visible:outline-2 focus-visible:-outline-offset-2
+        focus-visible:outline-accent;
+}
+
+.whale-row-hover {
+    @apply hover:bg-wash hover:text-ink active:bg-wash-strong;
+}
+
+/* The open thread. `aria-current` rather than a toggled class, so the selected
+   row is announced as well as styled, and stays selected if the class is
+   missed. */
+.whale-row[aria-current='page'] {
+    @apply bg-wash font-medium text-ink;
+}
+
+.whale-ring {
+    @apply border border-line;
+}
+
+/* The floating surface shared by every dropdown, picker and dialog. */
+.whale-pop {
+    @apply rounded-pop border border-line bg-popover p-1 shadow-xl;
+}
+
+.whale-chip {
+    @apply inline-flex shrink-0 items-center gap-1 rounded-full border border-line
+        px-2.5 py-1 text-[11px] font-medium text-body transition-colors duration-150
+        hover:bg-wash focus-visible:outline-2 focus-visible:-outline-offset-2
+        focus-visible:outline-accent;
+}
+
+.whale-chip-on {
+    @apply border-accent bg-accent/10 text-accent hover:bg-accent/15;
+}
+
+/* An icon-only control. Fixed box so a row of them never shifts as labels
+   come and go between breakpoints. */
+.whale-icon-button {
+    @apply grid h-8 w-8 shrink-0 place-items-center rounded-lg text-body
+        transition-colors duration-150 hover:bg-wash
+        focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent;
+}
+
+.whale-icon-button-sm {
+    @apply grid h-6 w-6 shrink-0 place-items-center rounded-md text-muted
+        transition-colors duration-150 hover:bg-wash-strong
+        focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent;
+}
+
+.whale-section-label {
+    @apply px-2.5 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted;
+}
+
+.whale-menu-item {
+    @apply flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm
+        text-ink transition-colors duration-100 hover:bg-wash
+        focus-visible:bg-wash focus-visible:outline-2 focus-visible:-outline-offset-2
+        focus-visible:outline-accent;
+}
+
+.whale-menu-item-danger {
+    @apply text-rose-600 hover:bg-rose-500/10 dark:text-rose-400;
+}
+
+/* A disabled row stays readable rather than fading out, because "Share" being
+   unavailable on an unsaved chat is information, not an error. */
+.whale-menu-item:disabled {
+    @apply cursor-not-allowed opacity-45 hover:bg-transparent;
+}
+
+/* ---------------------------------------------------------------------
+   Range inputs. Every slider in the app shares this so the filled track,
+   the thumb and the focus ring are identical whether it is resizing the
+   sidebar or choosing a response length.
+   --------------------------------------------------------------------- */
+.whale-range {
+    @apply h-1.5 w-full cursor-pointer appearance-none rounded-full bg-sunken
+        focus-visible:outline-2 focus-visible:-outline-offset-4 focus-visible:outline-accent;
+}
+
+.whale-range::-webkit-slider-thumb {
+    @apply h-3.5 w-3.5 appearance-none rounded-full border-2 border-popover bg-accent
+        shadow-sm transition-transform;
+}
+
+.whale-range::-moz-range-thumb {
+    @apply h-3.5 w-3.5 rounded-full border-2 border-popover bg-accent shadow-sm;
+}
+
+.whale-range:active::-webkit-slider-thumb {
+    transform: scale(1.15);
+}
+
+.whale-range:disabled {
+    @apply cursor-not-allowed opacity-40;
+}
+
+.whale-range:disabled::-webkit-slider-thumb {
+    @apply bg-muted;
 }
 
 /* ---------------------------------------------------------------------

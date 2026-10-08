@@ -23,6 +23,15 @@ use Illuminate\Validation\Rule;
 class ConversationController extends Controller
 {
     /**
+     * How many archived threads the sidebar offers to restore.
+     *
+     * The archive is a safety net rather than a second inbox, so it is
+     * deliberately bounded: an unbounded list would grow for the life of the
+     * session and be paid for on every history load.
+     */
+    private const ARCHIVED_PREVIEW_LIMIT = 50;
+
+    /**
      * The sidebar tree: projects with their conversations, plus unfiled threads.
      */
     public function index(Request $request): JsonResponse
@@ -42,6 +51,13 @@ class ConversationController extends Controller
             ->orderByDesc('updated_at')
             ->get();
 
+        // Sent with the tree so the archive view costs no extra round trip.
+        $archived = $this->conversationsQuery($request)
+            ->whereNotNull('archived_at')
+            ->orderByDesc('archived_at')
+            ->limit(self::ARCHIVED_PREVIEW_LIMIT)
+            ->get();
+
         return response()->json([
             'projects' => $projects->map(fn (Project $project): array => [
                 'id' => $project->id,
@@ -50,6 +66,7 @@ class ConversationController extends Controller
                 'conversations' => $project->conversations->map($this->conversationPayload(...))->all(),
             ])->all(),
             'conversations' => $unfiled->map($this->conversationPayload(...))->all(),
+            'archived' => $archived->map($this->conversationPayload(...))->all(),
         ]);
     }
 
@@ -60,7 +77,7 @@ class ConversationController extends Controller
     {
         $validated = $request->validate([
             'title' => ['sometimes', 'nullable', 'string', 'max:120'],
-            'mode' => ['sometimes', Rule::in(['chat', 'code', 'research', 'study', 'art'])],
+            'mode' => ['sometimes', Rule::in(parent::MODES)],
             'project_id' => ['sometimes', 'nullable', 'integer', 'exists:projects,id'],
         ]);
 
@@ -92,7 +109,7 @@ class ConversationController extends Controller
             'pinned' => ['sometimes', 'boolean'],
             'archived' => ['sometimes', 'boolean'],
             'position' => ['sometimes', 'integer', 'min:0'],
-            'mode' => ['sometimes', Rule::in(['chat', 'code', 'research', 'study', 'art'])],
+            'mode' => ['sometimes', Rule::in(parent::MODES)],
         ]);
 
         if (array_key_exists('title', $validated)) {
@@ -259,7 +276,11 @@ class ConversationController extends Controller
             'project_id' => $conversation->project_id,
             'pinned' => $conversation->pinned_at !== null,
             'preview' => $latest?->content ? str($latest->content)->limit(80)->toString() : '',
-            'updated_at' => $conversation->updated_at?->diffForHumans(),
+            // The sidebar groups threads by date and sorts them, neither of
+            // which a "3 hours ago" string can do, so the machine-readable
+            // value travels alongside the human one.
+            'updated_at' => $conversation->updated_at?->toIso8601String(),
+            'updated_human' => $conversation->updated_at?->diffForHumans(),
         ];
     }
 
@@ -279,7 +300,14 @@ class ConversationController extends Controller
     {
         return Project::query()->where(fn (Builder $query) => $query
             ->where('session_id', $this->ownerKey($request))
-            ->orWhere('user_id', $request->user()?->id));
+            // Only a real user adds a second way to own a row. Passing a null id
+            // through would compile to `user_id is null`, which matches every
+            // session-less row in the table — so a logged-out visitor would be
+            // shown other visitors' projects.
+            ->when(
+                $request->user() !== null,
+                fn (Builder $query) => $query->orWhere('user_id', $request->user()->id),
+            ));
     }
 
     /**
@@ -335,7 +363,13 @@ class ConversationController extends Controller
     {
         return Conversation::query()->where(fn (Builder $query) => $query
             ->where('session_id', $this->ownerKey($request))
-            ->orWhere('user_id', $request->user()?->id));
+            // See projectsQuery: a null user id is not "any owner", it is
+            // `user_id is null`, which would list every unclaimed conversation
+            // to any logged-out browser.
+            ->when(
+                $request->user() !== null,
+                fn (Builder $query) => $query->orWhere('user_id', $request->user()->id),
+            ));
     }
 
     private function authorizeConversation(Request $request, Conversation $conversation): void

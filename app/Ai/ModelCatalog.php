@@ -2,7 +2,7 @@
 
 namespace App\Ai;
 
-use App\Ai\Models\GgufModel;
+use App\Ai\Models\LocalModel;
 use App\Ai\Models\LocalModelRegistry;
 use App\Ai\Models\RuntimeModels;
 use Illuminate\Support\Str;
@@ -27,6 +27,8 @@ class ModelCatalog
     public function __construct(
         private readonly LocalModelRegistry $localModels,
         private readonly RuntimeModels $runtimeModels,
+        private readonly CustomModels $customModels,
+        private readonly CustomProviders $customProviders,
     ) {}
 
     /**
@@ -34,7 +36,7 @@ class ModelCatalog
      *
      * @var list<string>
      */
-    public const CAPABILITIES = ['text', 'image', 'audio', 'transcription'];
+    public const CAPABILITIES = ['text', 'image', 'video', 'audio', 'transcription'];
 
     /**
      * The config fields that prove a driver is configured, keyed by driver.
@@ -176,8 +178,8 @@ class ModelCatalog
                 'configured' => $this->isConfigured($driver, $configuration),
                 'default' => $name === $default,
                 'environment' => self::ENVIRONMENT_HINTS[$driver] ?? Str::upper($driver).'_API_KEY',
-                'capabilities' => $this->capabilities($configuration),
-                'models' => $this->models($driver, $configuration, $name === $default),
+                'capabilities' => $this->capabilities($configuration, $name),
+                'models' => $this->models($driver, $configuration, $name === $default, $name),
             ];
         }
 
@@ -204,7 +206,7 @@ class ModelCatalog
         }
 
         $capabilities = $models
-            ->flatMap(fn (GgufModel $model): array => $model->capabilities())
+            ->flatMap(fn (LocalModel $model): array => $model->capabilities())
             ->unique()
             ->sort()
             ->values()
@@ -214,17 +216,17 @@ class ModelCatalog
             'name' => self::LOCAL_PROVIDER,
             'label' => 'Local models',
             'driver' => 'local',
-            'configured' => $models->contains(fn (GgufModel $model): bool => $model->isConfigured()),
+            'configured' => $models->contains(fn (LocalModel $model): bool => $model->isConfigured()),
             'default' => false,
             'environment' => config('whale.models_path'),
             'capabilities' => $capabilities,
             'models' => $models
-                ->map(fn (GgufModel $model): array => $this->modelEntry(
+                ->map(fn (LocalModel $model): array => [...$this->modelEntry(
                     $model->id,
                     $model->isConfigured(),
                     false,
                     $model->name(),
-                ))
+                ), ...$this->localTags($model)])
                 ->values()
                 ->all(),
         ];
@@ -295,7 +297,15 @@ class ModelCatalog
     }
 
     /**
-     * The configured model for a capability, by provider name.
+     * The model a provider will actually use for a capability.
+     *
+     * Configuration is only half the answer: every capable provider ships a
+     * sensible default of its own (Gemini falls back to gemini-3.1-flash-image,
+     * OpenAI to gpt-image-2), and the SDK uses that whenever no model is set.
+     *
+     * Reading configuration alone therefore reports a correctly configured
+     * provider as incapable, which is how "Image generation is unavailable"
+     * appeared for a Gemini key that could already generate images.
      */
     public function configuredModel(string $provider, string $capability): ?string
     {
@@ -353,15 +363,48 @@ class ModelCatalog
     /**
      * The capabilities a provider exposes, read from its configured models.
      *
+     * A custom provider with imported models counts as a text provider even
+     * without a declared default: the models came from the endpoint's own
+     * catalogue, and reporting no capabilities would hide the provider from the
+     * picker and make the import appear to have done nothing.
+     *
+     * Image is different, and deliberately not inferred the same way. An
+     * imported list says what the endpoint serves, not that it serves images at
+     * the OpenAI path this application generates through: a local runtime that
+     * lists a GGUF checkpoint called "sdxl" would otherwise be offered for
+     * images and fail the request. So image is granted only when an entry
+     * declares an image model, which also routes it through the driver that can
+     * serve one.
+     *
      * @param  array<string, mixed>  $configuration
      * @return list<string>
      */
-    private function capabilities(array $configuration): array
+    private function capabilities(array $configuration, string $name): array
     {
-        return array_values(array_filter(
+        $capabilities = array_values(array_filter(
             self::CAPABILITIES,
             fn (string $capability): bool => filled($configuration['models'][$capability]['default'] ?? null),
         ));
+
+        if (! in_array('text', $capabilities, true) && $this->importedModels($name) !== []) {
+            $capabilities[] = 'text';
+        }
+
+        return $capabilities;
+    }
+
+    /**
+     * The models kept for a provider declared in WHALE_CUSTOM_PROVIDERS.
+     *
+     * @return list<array{id: string, label: string}>
+     */
+    private function importedModels(string $name): array
+    {
+        if (! $this->customProviders->isCustom($name)) {
+            return [];
+        }
+
+        return $this->customModels->for($name);
     }
 
     /**
@@ -375,7 +418,7 @@ class ModelCatalog
      * @param  array<string, mixed>  $configuration
      * @return list<array{id: string, label: string, configured: bool, default: bool, type: string, reasoning: bool}>
      */
-    private function models(string $driver, array $configuration, bool $isDefaultProvider): array
+    private function models(string $driver, array $configuration, bool $isDefaultProvider, string $name): array
     {
         $models = [];
 
@@ -383,6 +426,32 @@ class ModelCatalog
 
         if (filled($configured)) {
             $models[$configured] = $this->modelEntry($configured, true, $isDefaultProvider);
+        }
+
+        // A provider's default image model is as selectable as its default text
+        // model. It was previously left out, so an endpoint configured only for
+        // images could be reported as image-capable and then refuse the very
+        // model it had been configured with -- the model was never in the list
+        // that resolution checks against.
+        $image = $configuration['models']['image']['default'] ?? null;
+
+        if (filled($image) && ! isset($models[$image])) {
+            $models[$image] = $this->modelEntry($image, true, false);
+        }
+
+        // Models an operator imported from a custom endpoint are as usable as a
+        // wired-up model, so they lead the list ahead of any suggestion.
+        foreach ($this->importedModels($name) as $model) {
+            if (isset($models[$model['id']])) {
+                continue;
+            }
+
+            $models[$model['id']] = $this->modelEntry(
+                $model['id'],
+                true,
+                $model['id'] === $configured,
+                $model['label'],
+            );
         }
 
         // A runtime that keeps its own model store can be asked what it holds,
@@ -466,6 +535,33 @@ class ModelCatalog
             'default' => $isDefault,
             'type' => $reasoning ? 'reasoning' : 'fast',
             'reasoning' => $reasoning,
+        ];
+    }
+
+    /**
+     * The extra fields a local model needs beyond a hosted model's entry.
+     *
+     * A local file is not a chat model by default: what it can do was inferred
+     * from its tensors, and the picker needs to know both which kind it is and
+     * what media it handles, or an image checkpoint shows up in a chat list and
+     * produces a blank reply when chosen.
+     *
+     * @return array{media: bool, capabilities: list<string>, type: string}
+     */
+    private function localTags(LocalModel $model): array
+    {
+        $capabilities = $model->capabilities();
+        $media = array_intersect(['image', 'video', 'audio'], $capabilities) !== [];
+
+        return [
+            'media' => $media,
+            'capabilities' => $capabilities,
+            // The picker's type filter only knows "reasoning" and "fast", both
+            // of which mean "a model you can chat to". A generator belongs in
+            // neither, so it is tagged by what it makes instead.
+            'type' => $media
+                ? implode(' ', array_diff($capabilities, ['text']))
+                : ($this->isReasoningModel($model->id) ? 'reasoning' : 'fast'),
         ];
     }
 

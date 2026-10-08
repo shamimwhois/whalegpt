@@ -1,13 +1,27 @@
-{{-- Assistant replies are full-width text; only the user's own words get a bubble. --}}
+{{-- The sender's own words sit in a tinted bubble on the right; replies get the
+     brand avatar and a full-width column on the left, so the two sides read apart
+     at a glance even before the bubbles are noticed. --}}
 <div
-    class="group flex w-full flex-col"
-    :class="msg.role === 'user' ? 'items-end' : 'items-start'"
+    class="group flex w-full items-start gap-3"
+    :class="msg.role === 'user' ? 'justify-end' : 'justify-start'"
 >
+    {{-- The same accent square the sidebar brands, so every reply is attributed
+         without printing a name above each message. Decorative: the role is
+         already in the markup, so it stays out of the accessibility tree. --}}
+    <span
+        x-show="msg.role !== 'user'"
+        style="display:none"
+        class="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-accent text-white"
+        aria-hidden="true"
+    >
+        <x-ui.icon name="sparkles" class="h-4 w-4" />
+    </span>
+
     <div
         class="flex min-w-0 flex-col gap-1.5"
         :class="msg.role === 'user'
             ? 'max-w-[85%] items-end sm:max-w-[70%]'
-            : 'w-full items-start'"
+            : 'min-w-0 flex-1 items-start'"
     >
         <div x-show="msg.reasoning && msg.reasoning.length > 0" class="w-full" style="display:none">
             <button
@@ -42,7 +56,7 @@
             >
                 <template x-for="block in msg.reasoning" :key="block.id">
                     <p
-                        class="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-[#8f8f8f]"
+                        class="whitespace-pre-wrap break-words text-[0.87em] leading-relaxed text-[#8f8f8f]"
                         x-text="block.text"
                     ></p>
                 </template>
@@ -202,7 +216,7 @@
                 <p
                     x-show="msg.ocrState === 'ready'"
                     x-text="msg.ocrText"
-                    class="whitespace-pre-wrap break-words text-sm leading-relaxed
+                    class="whitespace-pre-wrap break-words text-[0.93em] leading-relaxed
                            text-[#0d0d0d] dark:text-[#ececec]"
                     style="display:none"
                 ></p>
@@ -246,12 +260,13 @@
                 style="display:none"
             ></p>
         </div>
-{{-- The user's own words sit in a grey bubble; assistant replies are plain text. --}}
+{{-- The user's own words sit in an accent-tinted bubble; assistant replies are
+     plain full-width prose under the avatar. --}}
         <div
             x-show="!msg.editing && (!msg.kind || msg.kind === 'text')"
-            class="text-[15px] leading-7 text-[#0d0d0d] dark:text-[#ececec]"
+            class="whale-reading text-[#0d0d0d] dark:text-[#ececec]"
             :class="msg.role === 'user'
-                ? 'max-w-full rounded-3xl bg-[#f4f4f4] px-4 py-2.5 dark:bg-[#303030]'
+                ? 'max-w-full rounded-3xl bg-accent/10 px-4 py-2.5 ring-1 ring-accent/20 dark:bg-accent/15 dark:ring-accent/25'
                 : 'w-full'"
             style="display:none"
         >
@@ -298,11 +313,12 @@
                 Stopped
             </p>
         </div>
-{{-- Hover action rail: copy / edit / regenerate / listen --}}
+{{-- Hover action rail: copy / edit / regenerate / listen. On touch widths there
+     is no hover, so the rail stays visible there instead of being unreachable. --}}
         <div
             x-show="!msg.editing"
-            class="flex items-center gap-0.5 opacity-0 transition-opacity duration-150
-                   group-hover:opacity-100 focus-within:opacity-100"
+            class="flex items-center gap-0.5 transition-opacity duration-150
+                   sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100"
             style="display:none"
         >
             <button
@@ -387,8 +403,8 @@
         </div>
 
         <span
-            class="px-1 text-[11px] text-[#8f8f8f] opacity-0 transition-opacity duration-200
-                   group-hover:opacity-100"
+            class="px-1 text-[11px] text-[#8f8f8f] transition-opacity duration-200
+                   sm:opacity-0 sm:group-hover:opacity-100"
             x-text="msg.time"
         ></span>
     </div>

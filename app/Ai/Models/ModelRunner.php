@@ -93,6 +93,27 @@ class ModelRunner
     }
 
     /**
+     * Health for just the named runtimes, in the order they were requested.
+     *
+     * Unknown names are reported as unknown rather than dropped, so a caller
+     * asking about a runtime that has since been removed from configuration
+     * gets an answer instead of a silent gap in the list.
+     *
+     * @param  list<string>  $runtimes
+     * @return array<string, array{status: string, detail: string|null, models: list<string>}>
+     */
+    public function healthFor(array $runtimes): array
+    {
+        $health = [];
+
+        foreach ($runtimes as $runtime) {
+            $health[$runtime] = $this->health($runtime);
+        }
+
+        return $health;
+    }
+
+    /**
      * Stream a chat completion from the runtime serving this model.
      *
      * @param  list<array<string, mixed>>  $messages
@@ -101,7 +122,7 @@ class ModelRunner
      *
      * @throws RuntimeException when the model has no runtime, or the runtime refuses.
      */
-    public function stream(GgufModel $model, array $messages, array $options = []): \Generator
+    public function stream(LocalModel $model, array $messages, array $options = []): \Generator
     {
         $runtime = $model->runtime();
         $name = $runtime['name'];
@@ -151,6 +172,35 @@ class ModelRunner
         }
 
         yield from $this->deltas($response->body());
+    }
+
+    /**
+     * Stream a completion for a model file identified by name or id.
+     *
+     * This is what the chat layer calls for the "local" provider: it resolves
+     * the file through the registry and delegates to the runtime serving it, so
+     * a selected local model reaches llama.cpp instead of being handed to the
+     * AI SDK as though it were a hosted provider.
+     *
+     * @param  list<array<string, mixed>>  $messages
+     * @param  array<string, mixed>  $options
+     * @return \Generator<int, string>
+     *
+     * @throws RuntimeException when the file is unknown, has no runtime, or the runtime refuses.
+     */
+    public function streamLocal(LocalModelRegistry $registry, string $identifier, array $messages, array $options = []): \Generator
+    {
+        $model = $registry->find($identifier);
+
+        if ($model === null) {
+            throw new RuntimeException(sprintf(
+                'No local model file named [%s] was found in %s.',
+                $identifier,
+                config('whale.models_path'),
+            ));
+        }
+
+        yield from $this->stream($model, $messages, $options);
     }
 
     /**
@@ -266,7 +316,7 @@ class ModelRunner
     /**
      * The advice shown when nothing can serve a model's capabilities.
      */
-    private function hintForCapabilities(GgufModel $model): string
+    private function hintForCapabilities(LocalModel $model): string
     {
         return in_array('image', $model->capabilities(), true)
             ? 'Image models need a Python runtime such as diffusers or ComfyUI; llama.cpp cannot serve them.'
