@@ -14,10 +14,7 @@
         "ai-sdk-development",
         "laravel-best-practices",
         "testing-best-practices",
-        "tailwindcss-development",
-        "whale-workspace",
-        "research-and-study",
-        "vector-and-media",
-        "publish-and-export"
+        "socialite-development",
+        "tailwindcss-development"
     ]
 }

@@ -69,27 +69,45 @@
         <div class="flex shrink-0 flex-wrap items-center gap-2 border-b border-black/[0.08] px-4 py-2
                     dark:border-white/[0.12]">
             <div class="flex items-center gap-1 rounded-lg bg-[#f4f4f4] p-1 dark:bg-white/[0.06]">
-                <button
-                    type="button"
-                    x-on:click="board.tool = 'brush'"
-                    :aria-pressed="board.tool === 'brush' ? 'true' : 'false'"
-                    class="rounded-md px-2.5 py-1 text-[11px] font-medium transition focus-visible:outline-2
-                           focus-visible:outline-accent"
-                    :class="board.tool === 'brush'
-                        ? 'bg-white shadow-sm dark:bg-[#303030]'
-                        : 'text-[#8f8f8f] hover:text-[#5d5d5d]'"
-                >Brush</button>
+                {{-- Freehand tools --}}
+                <template x-for="option in [
+                    { id: 'brush', label: 'Brush' },
+                    { id: 'eraser', label: 'Eraser' },
+                ]" :key="option.id">
+                    <button
+                        type="button"
+                        x-on:click="board.tool = option.id"
+                        :aria-pressed="board.tool === option.id ? 'true' : 'false'"
+                        class="rounded-md px-2.5 py-1 text-[11px] font-medium transition focus-visible:outline-2
+                               focus-visible:outline-accent"
+                        :class="board.tool === option.id
+                            ? 'bg-white shadow-sm dark:bg-[#303030]'
+                            : 'text-[#8f8f8f] hover:text-[#5d5d5d]'"
+                        x-text="option.label"
+                    ></button>
+                </template>
 
-                <button
-                    type="button"
-                    x-on:click="board.tool = 'eraser'"
-                    :aria-pressed="board.tool === 'eraser' ? 'true' : 'false'"
-                    class="rounded-md px-2.5 py-1 text-[11px] font-medium transition focus-visible:outline-2
-                           focus-visible:outline-accent"
-                    :class="board.tool === 'eraser'
-                        ? 'bg-white shadow-sm dark:bg-[#303030]'
-                        : 'text-[#8f8f8f] hover:text-[#5d5d5d]'"
-                >Eraser</button>
+                <span class="mx-0.5 h-4 w-px bg-black/10 dark:bg-white/10"></span>
+
+                {{-- Shapes are dragged rather than painted, so they read as a
+                     separate group in the toolbar. --}}
+                <template x-for="option in [
+                    { id: 'line', label: 'Line' },
+                    { id: 'rect', label: 'Rect' },
+                    { id: 'ellipse', label: 'Ellipse' },
+                ]" :key="option.id">
+                    <button
+                        type="button"
+                        x-on:click="board.tool = option.id"
+                        :aria-pressed="board.tool === option.id ? 'true' : 'false'"
+                        class="rounded-md px-2.5 py-1 text-[11px] font-medium transition focus-visible:outline-2
+                               focus-visible:outline-accent"
+                        :class="board.tool === option.id
+                            ? 'bg-white shadow-sm dark:bg-[#303030]'
+                            : 'text-[#8f8f8f] hover:text-[#5d5d5d]'"
+                        x-text="option.label"
+                    ></button>
+                </template>
             </div>
 
             {{-- Palette --}}
@@ -136,19 +154,33 @@
         <div class="flex min-h-0 flex-1 flex-col lg:flex-row">
             <div class="flex min-h-[200px] flex-1 items-center justify-center overflow-hidden bg-[#f4f4f4] p-3
                         dark:bg-[#1a1a1a]">
-                <canvas
-                    x-ref="boardCanvas"
-                    width="1200"
-                    height="760"
-                    x-on:pointerdown="boardPointerDown($event)"
-                    x-on:pointermove="boardPointerMove($event)"
-                    x-on:pointerup="boardPointerUp($event)"
-                    x-on:pointercancel="boardPointerUp($event)"
-                    x-on:pointerleave="boardPointerUp($event)"
-                    class="max-h-full max-w-full touch-none rounded-xl bg-white shadow-sm ring-1 ring-black/10
-                           dark:ring-white/15"
-                    style="aspect-ratio: 1200 / 760"
-                ></canvas>
+                {{-- The overlay sits exactly on top of the canvas and carries the
+                     in-progress shape. Keeping it separate means a cancelled drag
+                     never marks the drawing, and the committed canvas only ever
+                     holds finished work. --}}
+                <div class="relative max-h-full max-w-full">
+                    <canvas
+                        x-ref="boardCanvas"
+                        width="1200"
+                        height="760"
+                        x-on:pointerdown="boardPointerDown($event)"
+                        x-on:pointermove="boardPointerMove($event)"
+                        x-on:pointerup="boardPointerUp($event)"
+                        x-on:pointercancel="boardPointerUp($event)"
+                        x-on:pointerleave="boardPointerUp($event)"
+                        class="block max-h-full max-w-full touch-none rounded-xl bg-white shadow-sm ring-1 ring-black/10
+                               dark:ring-white/15"
+                        style="aspect-ratio: 1200 / 760"
+                    ></canvas>
+
+                    <canvas
+                        x-ref="boardOverlay"
+                        width="1200"
+                        height="760"
+                        aria-hidden="true"
+                        class="pointer-events-none absolute inset-0 h-full w-full touch-none"
+                    ></canvas>
+                </div>
             </div>
 
             <aside class="flex h-[34vh] shrink-0 flex-col gap-3 overflow-y-auto border-t border-black/[0.08]

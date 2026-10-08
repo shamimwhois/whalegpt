@@ -1,58 +1,188 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Whale AI
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+Whale AI is a local-first AI workbench built with Laravel: a streaming chat
+assistant, a media studio, and a file workspace with its own terminal — answered
+by hosted providers, local model files, or any OpenAI-compatible endpoint you
+already run.
 
-## About Laravel
+## Highlights
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+**Chat** (`/ai/chat`)
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+- Server-sent-event streaming replies with stop, regenerate, edit-and-resend,
+  copy, read-aloud, reactions, and hover timestamps.
+- Twelve assistant modes — Chat, Ask, Plan, Code, Debug, Agent, Orchestrate,
+  Research, Deep search, Study, Security study, Art — with tool policies
+  enforced by the tool list itself; read-only modes cannot write files.
+- Response depth, thinking effort, response length, plus web-search and
+  deep-search toggles.
+- Collapsible reasoning blocks, markdown with syntax-highlighted code blocks
+  (copy / open in sandbox), image and video attachments, slash commands,
+  @-mention sub-agents, and prompt enhancement.
+- Projects, searchable conversation history, public share links, and export to
+  txt, Markdown, HTML, JSON or PDF.
+- Light and dark themes, reading preferences (text size, transcript density,
+  reduced motion), and a resizable sidebar with a mobile drawer.
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+**Models & providers**
 
-## Learning Laravel
+- Hosted providers through env keys: OpenAI, Anthropic, Gemini, Groq, DeepSeek,
+  Mistral, xAI, OpenRouter, Cohere, Azure OpenAI, Amazon Bedrock, ElevenLabs,
+  Ollama, and any OpenAI-compatible endpoint (full list in `config/ai.php`).
+- Any number of extra endpoints declared in one JSON variable
+  (`WHALE_CUSTOM_PROVIDERS`), with model discovery, import and re-sync from the
+  settings view.
+- Drop-in `.gguf` and `.safetensors` detection: headers are profiled for
+  metadata and capabilities, but weights are never executed by the app —
+  generation is delegated to llama.cpp, Ollama, or a Python image runtime, each
+  health-probed before it is reported ready.
+- Model picker with type filters (all / reasoning / fast / image / media).
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+**Media studio** (`/ai/chat/studio`)
 
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+- Image generation and editing from a source picture with 21 style presets,
+  SVG/vector export, OCR text extraction, text-to-speech audio, and a video
+  storyboard that renders generated frames into an HTML clip.
+- An in-chat draw/scratch board that feeds generation, plus an OpenAI-compatible
+  image provider for endpoints such as Pollinations or LM Studio.
 
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
+**Workspace IDE** (`/ai/chat/workspace`)
 
-## Agentic Development
+- File tree, tabbed editor with dirty tracking, save, upload, mkdir, move,
+  delete, search-in-files, preview, split layouts, command palette, and export.
+- A sandboxed terminal with an allowlisted command set, and a package manager
+  (composer / npm / pip) restricted to non-scripting subcommands.
+- @-file mentions in the composer and code-block sandbox execution.
 
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
+**Speech & capture**
+
+- Live microphone transcription sent as short clips, so words appear while you
+  are still talking.
+- Two engines behind one interface: Whistle (free, on-device, offline) and the
+  AI SDK, with FFmpeg normalising browser WebM audio to 16 kHz mono WAV.
+- Camera capture with vision-model scene description.
+
+**Accounts, staff & billing**
+
+- Optional sign-in gate (`WHALE_REQUIRE_AUTH`), email/password auth, and Google
+  or GitHub OAuth where the first callback registers the account.
+- Roles (user / staff / admin) kept separate from plans; `WHALE_ADMIN_EMAILS`
+  allowlists the `/admin` dashboard, and staff can open `/staff/billing`.
+- Plans Free / Pro ($19) / Premium ($49) gated by a single `plan:` middleware,
+  with a public pricing page, Stripe checkout, customer portal, and
+  signature-verified webhooks.
+
+**Site**
+
+- Public landing page with auth modal, `/pricing`, and docs at `/docs`
+  (introduction, authentication, chat completions, models, errors) whose slugs
+  are validated against `config/docs.php`.
+
+## Routes
+
+| Path | Page |
+| --- | --- |
+| `/` | Landing page |
+| `/ai/chat` | Chat app |
+| `/ai/chat/studio` | Media studio |
+| `/ai/chat/workspace` | Workspace IDE |
+| `/docs` | Public documentation |
+| `/pricing`, `/billing` | Pricing and billing |
+| `/login` | Sign in (shown when the auth gate is on) |
+| `/admin`, `/staff/billing` | Admin dashboard and staff area |
+
+## Requirements
+
+- PHP 8.3+ (developed and run on PHP 8.5) and Composer
+- Node.js 20+ (v25 tested)
+- SQLite (default) — MySQL and PostgreSQL also work
+- Optional: FFmpeg (browser microphone clips), the Whistle binary (offline
+  transcription), llama.cpp / Ollama / diffusers runtimes (local models),
+  Stripe keys (billing), Google and GitHub OAuth apps (social sign-in)
+
+## Installation
 
 ```bash
-composer require laravel/boost --dev
-
-php artisan boost:install
+composer run setup
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+This runs `composer install`, copies `.env` when it is missing, generates the
+app key, migrates the database, installs npm packages, and builds the assets.
+Then start it:
 
-## Contributing
+```bash
+php artisan serve      # or point Laravel Herd / Valet at the project
+```
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+## Configuration
 
-## Code of Conduct
+Everything is env-driven; `.env.example` carries the annotated list. The main
+groups:
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+| Area | Variables |
+| --- | --- |
+| AI providers | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `OLLAMA_URL`, … (see `config/ai.php`) |
+| Custom endpoints | `WHALE_CUSTOM_PROVIDERS` (JSON array of `{name, url, key, …}`), `WHALE_CUSTOM_PROVIDERS_MODELS_PATH` |
+| Local models | `WHALE_MODELS_PATH`, `LOCAL_LLM_URL`, `LOCAL_IMAGE_URL`, `WHALE_DETECT_CAPABILITIES`, `WHALE_MODEL_CACHE_TTL` |
+| Speech | `WHALE_STT_ENGINE` (`auto` / `whistle` / `sdk`), `WHISTLE_BINARY`, `WHALE_SPEECH_LANGUAGE` |
+| Auth | `WHALE_REQUIRE_AUTH`, `GOOGLE_CLIENT_ID`/`SECRET`, `GITHUB_CLIENT_ID`/`SECRET` |
+| Access | `WHALE_ADMIN_EMAILS` (comma-separated; empty means nobody) |
+| Billing | `BILLING_STRIPE_SECRET`, `BILLING_STRIPE_WEBHOOK_SECRET`, `BILLING_STRIPE_PRICE_PRO`, `BILLING_STRIPE_PRICE_PREMIUM` |
+| MCP servers | `MCP_LINEAR_URL`, `MCP_LINEAR_TOKEN`, `MCP_FILESYSTEM_COMMAND` |
 
-## Security Vulnerabilities
+Run `php artisan config:clear` after editing `.env` while a config cache is
+active.
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+## Development
+
+```bash
+composer run dev       # php artisan serve + queue listener + Vite, in one command
+npm run build          # production assets
+npm run dev            # assets only
+```
+
+## Testing
+
+```bash
+php artisan test --compact              # Pest feature suite (273 tests, 1,131 assertions)
+vendor/bin/pint --dirty --format agent  # format changed PHP files
+```
+
+An optional end-to-end smoke check drives a real headless Chrome over the
+DevTools protocol:
+
+```bash
+php artisan serve --port=8000
+chrome --headless=new --remote-debugging-port=9223 --user-data-dir=/tmp/whale-cdp
+APP_URL=http://127.0.0.1:8000/ai/chat node browser-check.mjs
+```
+
+## Project structure
+
+```
+app/Ai/            agents, tools, model catalog, local model parsers, speech
+app/Billing/       Plan and Role enums, Stripe gateway
+app/Http/          chat, media, workspace, conversation, auth, admin controllers
+app/Mcp/           MCP client tools and the workspace MCP server
+app/Workspace/     workspace filesystem, terminal, package manager
+config/            ai.php, whale.php, billing.php, docs.php, mcp.php, admin.php
+resources/views/   Blade + Alpine.js UI (chat, studio, workspace, docs, billing)
+resources/css/     Tailwind CSS 4 theme, semantic tokens, prose and code styles
+routes/            web.php, chat.php (mounted under /ai), admin.php, api.php
+tests/Feature/     Pest suite (273 tests)
+```
+
+## Working with AI agents
+
+`AGENTS.md` (mirrored as `CLAUDE.md`) carries the Laravel Boost guidelines for
+this repository, and `.agents/skills/` holds reusable domain skills — Laravel,
+Tailwind, testing, publishing, and more — that agents activate while working
+here. `.ai/rules/` path-scoped rules apply when that directory exists.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for all notable changes.
 
 ## License
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+MIT — see the `license` field in [composer.json](composer.json).

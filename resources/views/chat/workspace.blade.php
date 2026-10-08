@@ -18,6 +18,8 @@
             terminal: @js(route('chat.workspace.terminal')),
             chat: @js(route('chat.index')),
             studio: @js(route('chat.studio')),
+            models: @js(route('chat.models')),
+            localModels: @js(route('chat.local-models')),
         })"
         x-init="init()"
         class="flex h-dvh flex-col overflow-hidden bg-white text-[#0d0d0d] dark:bg-[#212121] dark:text-[#ececec]"
@@ -37,6 +39,28 @@
             </a>
 
             <div class="min-w-0 flex-1"></div>
+
+            {{-- Model selection: the same catalog chat and Studio read, kept in
+                 the same localStorage key, so one choice covers every surface. --}}
+            <div class="hidden sm:block">
+                <select
+                    :value="selectionKey"
+                    x-on:change="applySelection($event.target.value)"
+                    class="max-w-[11rem] cursor-pointer truncate rounded-lg border border-black/[0.08] bg-white px-2 py-1.5
+                           text-xs font-medium text-[#5d5d5d] transition hover:text-[#0d0d0d]
+                           focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent
+                           dark:border-white/[0.12] dark:bg-[#1e1e1e] dark:text-[#b4b4b4] lg:max-w-[15rem]"
+                    aria-label="Model"
+                >
+                    <template x-for="option in selectableModels()" :key="option.key">
+                        <option
+                            :value="option.key"
+                            x-text="option.label"
+                            :disabled="!option.configured"
+                        ></option>
+                    </template>
+                </select>
+            </div>
 
             {{-- Quick open: the same file list the palette searches. --}}
             <button
@@ -635,6 +659,46 @@
                     <span x-text="languageLabel(activePath)"></span>
 
                     <span class="ml-auto flex items-center gap-3">
+                        {{-- Autosave state. "Saved" is shown briefly so the status
+                             bar confirms the write happened, rather than the user
+                             assuming it did. --}}
+                        <span
+                            x-show="autosave && autosaveState !== 'idle'"
+                            class="flex items-center gap-1"
+                            :class="{
+                                'text-black/45 dark:text-white/45': autosaveState === 'saved',
+                                'text-amber-600 dark:text-amber-400': autosaveState === 'pending' || autosaveState === 'saving',
+                                'text-red-600 dark:text-red-400': autosaveState === 'failed',
+                            }"
+                        >
+                            <span
+                                class="h-1.5 w-1.5 rounded-full"
+                                :class="{
+                                    'bg-black/40 dark:bg-white/40': autosaveState === 'saved',
+                                    'bg-amber-400 animate-pulse': autosaveState === 'pending' || autosaveState === 'saving',
+                                    'bg-red-500': autosaveState === 'failed',
+                                }"
+                            ></span>
+                            <span x-text="{
+                                pending: 'Saving soon',
+                                saving: 'Saving',
+                                saved: 'Saved',
+                                failed: 'Autosave failed',
+                            }[autosaveState]"></span>
+                        </span>
+
+                        {{-- Autosave can be switched off, in which case Save is the
+                             only way to write the file. --}}
+                        <button
+                            type="button"
+                            x-on:click="autosave = !autosave"
+                            :aria-pressed="autosave"
+                            class="rounded px-1.5 py-0.5 transition hover:bg-black/[0.06] dark:hover:bg-white/[0.08]"
+                            :class="autosave ? 'text-black/50 dark:text-white/50' : 'text-amber-600 dark:text-amber-400'"
+                            x-text="autosave ? 'Autosave on' : 'Autosave off'"
+                            title="Save the file automatically a moment after you stop typing"
+                        ></button>
+
                         <span x-show="dirty" class="flex items-center gap-1 text-amber-600 dark:text-amber-400"
                               style="display:none">
                             <span class="h-1.5 w-1.5 rounded-full bg-amber-400"></span> Unsaved
@@ -823,6 +887,21 @@
                 activePath: null,
                 contents: '',
                 dirty: false,
+
+                // Model selection, shared with chat and Studio through the same
+                // localStorage key.
+                providers: [],
+                providerName: null,
+                modelName: null,
+                selectionKey: '',
+
+                // Autosave. The delay is long enough that a burst of typing
+                // collapses into one write, and short enough that the tab's
+                // unsaved marker disappears while the user is still reading.
+                autosave: true,
+                autosaveDelay: 1200,
+                autosaveState: 'idle',
+                autosaveTimer: null,
                 cursor: { line: 1, col: 1 },
                 draggedPath: null,
                 dragOverPath: null,
@@ -854,6 +933,7 @@
 
                 init() {
                     this.refresh();
+                    this.loadCatalog();
                     window.addEventListener('keydown', (event) => this.onKeydown(event));
                     window.addEventListener('resize', () => { this.menu.open = false; });
 
@@ -869,6 +949,87 @@
 
                 headers() {
                     return { 'Accept': 'application/json' };
+                },
+
+                /**
+                 * Every model the app can run, flattened into one <select>.
+                 *
+                 * Unconfigured entries are listed but disabled: they have no
+                 * credentials to send with, so offering one as a live choice
+                 * would only fail on the next request.
+                 */
+                selectableModels() {
+                    const options = [];
+
+                    for (const provider of this.providers) {
+                        for (const model of provider.models ?? []) {
+                            options.push({
+                                key: `${provider.name}\u001f${model.id}`,
+                                label: `${model.label} \u00b7 ${provider.label}`,
+                                configured: provider.configured && model.configured,
+                            });
+                        }
+                    }
+
+                    return options.sort((a, b) => Number(b.configured) - Number(a.configured));
+                },
+
+                applySelection(key) {
+                    const [provider, model] = (key ?? '').split('\u001f');
+
+                    if (!provider || !model) {
+                        return;
+                    }
+
+                    this.providerName = provider;
+                    this.modelName = model;
+                    this.selectionKey = key;
+
+                    try {
+                        localStorage.setItem('whale.model', JSON.stringify({ provider, model }));
+                    } catch (error) {
+                        // Storage disabled: the choice survives this page view only.
+                    }
+                },
+
+                async loadCatalog() {
+                    try {
+                        const response = await fetch(this.routes.models, { headers: this.headers() });
+
+                        if (!response.ok) {
+                            return;
+                        }
+
+                        const payload = await response.json();
+
+                        this.providers = payload?.providers ?? [];
+
+                        let stored = null;
+
+                        try {
+                            stored = JSON.parse(localStorage.getItem('whale.model') ?? 'null');
+                        } catch (error) {
+                            stored = null;
+                        }
+
+                        const usable = (provider, model) => this.providers.some((entry) =>
+                            entry.name === provider
+                            && entry.configured
+                            && (entry.models ?? []).some((candidate) => candidate.id === model && candidate.configured));
+
+                        const provider = stored?.provider ?? payload?.default?.provider ?? null;
+                        const model = stored?.model ?? payload?.default?.model ?? null;
+
+                        if (usable(provider, model)) {
+                            this.providerName = provider;
+                            this.modelName = model;
+                        }
+
+                        this.selectionKey = `${this.providerName ?? ''}\u001f${this.modelName ?? ''}`;
+                    } catch (error) {
+                        // The picker stays empty; workspace actions fall back to
+                        // the server's configured default.
+                    }
                 },
 
                 workspaceParam() {
@@ -1163,11 +1324,34 @@
                         return;
                     }
 
+                    // Flush the outgoing file before switching: its pending
+                    // timer would otherwise fire against the newly active path.
+                    this.flushPendingSave();
+
                     this.activePath = path;
                     this.contents = tab.contents;
                     this.dirty = tab.dirty;
                     this.cursor = { line: 1, col: 1 };
                     this.$nextTick(() => this.refreshPreview());
+                },
+
+                /**
+                 * Write the active file right now, if a save is already queued.
+                 *
+                 * Called whenever the editor stops being the thing the user is
+                 * looking at, so nothing is left waiting on a timer.
+                 */
+                flushPendingSave() {
+                    if (!this.autosaveTimer) {
+                        return;
+                    }
+
+                    clearTimeout(this.autosaveTimer);
+                    this.autosaveTimer = null;
+
+                    if (this.dirty) {
+                        this.save({ autosave: true });
+                    }
                 },
 
                 closeTab(path) {
@@ -1176,8 +1360,15 @@
                         return;
                     }
 
-                    if (tab.dirty && !window.confirm(`"${path}" has unsaved changes. Close anyway?`)) {
-                        return;
+                    if (tab.dirty) {
+                        // Save on close rather than asking. With autosave on this
+                        // only fires for a genuine failure, and discarding typed
+                        // work on a prompt is worse than one extra write.
+                        if (this.autosave) {
+                            this.save({ autosave: true });
+                        } else if (!window.confirm(`"${path}" has unsaved changes. Close anyway?`)) {
+                            return;
+                        }
                     }
 
                     const index = this.tabs.findIndex((entry) => entry.path === path);
@@ -1210,22 +1401,57 @@
 
                     this.dirty = true;
                     this.syncCursor();
+                    this.scheduleAutosave();
                 },
 
-                async save() {
+                /**
+                 * Save shortly after typing stops.
+                 *
+                 * Debounced so a burst of keystrokes is one request, and delayed
+                 * past a short pause so the request is not racing the next edit.
+                 * Saving per keystroke would hammer the disk and the route limiter
+                 * for no benefit.
+                 */
+                scheduleAutosave() {
+                    if (!this.autosave || !this.activePath) {
+                        return;
+                    }
+
+                    clearTimeout(this.autosaveTimer);
+                    this.autosaveState = 'pending';
+
+                    this.autosaveTimer = setTimeout(() => this.save({ autosave: true }), this.autosaveDelay);
+                },
+
+                /**
+                 * Write the active file to the workspace.
+                 *
+                 * With autosave the outcome is shown inline in the status bar
+                 * rather than as a dismissable error: a failed background save
+                 * must never look like a successful one.
+                 */
+                async save({ autosave = false } = {}) {
                     const tab = this.tabFor(this.activePath);
 
                     if (!tab) {
                         return;
                     }
 
+                    clearTimeout(this.autosaveTimer);
+                    this.autosaveState = 'saving';
+
+                    // The path is captured up front: switching tabs mid-request must
+                    // not mark a different file as saved.
+                    const path = this.activePath;
+                    const contents = this.contents;
+
                     try {
                         const response = await fetch(this.routes.write, {
                             method: 'PUT',
                             headers: { ...this.headers(), 'Content-Type': 'application/json' },
                             body: JSON.stringify({
-                                path: this.activePath,
-                                contents: this.contents,
+                                path,
+                                contents,
                                 workspace: this.workspaceParam(),
                             }),
                         });
@@ -1237,12 +1463,23 @@
                         }
 
                         this.applyPayload(payload);
-                        tab.contents = this.contents;
-                        tab.dirty = false;
-                        this.dirty = false;
+
+                        const saved = this.tabFor(path);
+
+                        if (saved) {
+                            saved.contents = contents;
+                            saved.dirty = false;
+                        }
+
+                        this.dirty = this.hasDirty();
                         this.refreshPreview();
+                        this.autosaveState = 'saved';
+                        this.error = '';
                     } catch (error) {
-                        this.error = error.message;
+                        this.autosaveState = 'failed';
+                        this.error = autosave
+                            ? `Autosave failed: ${error.message}`
+                            : error.message;
                     }
                 },
 

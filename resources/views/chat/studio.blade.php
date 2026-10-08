@@ -11,6 +11,7 @@
             audio: @js(route('chat.audio')),
             vector: @js(route('chat.vector')),
             ocr: @js(route('chat.ocr')),
+            models: @js(route('chat.models')),
             workspace: @js(route('chat.workspace.index')),
             preview: @js(route('chat.workspace.preview')),
         })"
@@ -43,6 +44,28 @@
                     ></button>
                 </template>
             </nav>
+
+            {{-- Model selection: the same catalog chat reads, so Studio and the
+                 composer never disagree about which models exist. --}}
+            <div class="relative shrink-0">
+                <select
+                    :value="selectionKey"
+                    x-on:change="applySelection($event.target.value)"
+                    class="max-w-[10rem] cursor-pointer truncate rounded-lg border border-black/[0.08] bg-white px-2 py-1.5 text-xs
+                           font-medium text-[#5d5d5d] transition hover:text-[#0d0d0d] focus-visible:outline-2
+                           focus-visible:outline-offset-2 focus-visible:outline-accent dark:border-white/[0.12]
+                           dark:bg-[#1e1e1e] dark:text-[#b4b4b4] sm:max-w-[14rem]"
+                    aria-label="Model"
+                >
+                    <template x-for="option in selectableModels()" :key="option.key">
+                        <option
+                            :value="option.key"
+                            x-text="option.label"
+                            :disabled="!option.configured"
+                        ></option>
+                    </template>
+                </select>
+            </div>
 
             <div class="min-w-0 flex-1"></div>
 
@@ -311,6 +334,12 @@
                 active: 'image',
                 state: 'idle',
                 prompt: '',
+                // Model selection, shared with the chat composer through the same
+                // localStorage key so a choice made here is a choice everywhere.
+                providers: [],
+                providerName: null,
+                modelName: null,
+                selectionKey: '',
                 resultUrl: null,
                 resultPath: null,
                 resultLabel: '',
@@ -402,7 +431,104 @@
                 },
 
                 init() {
-                    // Nothing to load up-front; the pane starts in its idle state.
+                    this.loadCatalog();
+                },
+
+                /**
+                 * Every model the app can actually run, flattened into one list.
+                 *
+                 * Only configured models are offered: an unconfigured entry has
+                 * no key to send with, so selecting one would fail at the server
+                 * and surface as a generic media error.
+                 */
+                selectableModels() {
+                    const options = [];
+
+                    for (const provider of this.providers) {
+                        for (const model of provider.models ?? []) {
+                            options.push({
+                                key: `${provider.name}\u001f${model.id}`,
+                                label: `${model.label} \u00b7 ${provider.label}`,
+                                configured: provider.configured && model.configured,
+                            });
+                        }
+                    }
+
+                    return options;
+                },
+
+                applySelection(key) {
+                    const [provider, model] = (key ?? '').split('\u001f');
+
+                    if (!provider || !model) {
+                        return;
+                    }
+
+                    this.providerName = provider;
+                    this.modelName = model;
+                    this.selectionKey = key;
+
+                    try {
+                        localStorage.setItem('whale.model', JSON.stringify({ provider, model }));
+                    } catch (error) {
+                        // Storage disabled: the choice survives this page view only.
+                    }
+                },
+
+                /**
+                 * The provider and model to send with a media request.
+                 *
+                 * Undefined rather than null when nothing is chosen, so the
+                 * server falls back to its configured default instead of
+                 * failing validation on an empty string.
+                 */
+                selection() {
+                    return {
+                        provider: this.providerName ?? undefined,
+                        model: this.modelName ?? undefined,
+                    };
+                },
+
+                async loadCatalog() {
+                    try {
+                        const response = await fetch(this.routes.models, { headers: { 'Accept': 'application/json' } });
+
+                        if (!response.ok) {
+                            return;
+                        }
+
+                        const payload = await response.json();
+
+                        this.providers = payload?.providers ?? [];
+
+                        // A stored selection outlives model swaps, so it is only
+                        // honoured when the catalog still offers it.
+                        let stored = null;
+
+                        try {
+                            stored = JSON.parse(localStorage.getItem('whale.model') ?? 'null');
+                        } catch (error) {
+                            stored = null;
+                        }
+
+                        const usable = (provider, model) => this.providers.some((entry) =>
+                            entry.name === provider
+                            && entry.configured
+                            && (entry.models ?? []).some((candidate) => candidate.id === model && candidate.configured));
+
+                        const provider = stored?.provider ?? payload?.default?.provider ?? null;
+                        const model = stored?.model ?? payload?.default?.model ?? null;
+
+                        if (usable(provider, model)) {
+                            this.providerName = provider;
+                            this.modelName = model;
+                        }
+
+                        this.selectionKey = `${this.providerName ?? ''}\u001f${this.modelName ?? ''}`;
+                    } catch (error) {
+                        // The picker stays empty and every request uses the
+                        // server's configured default.
+                    }
                 },
 
                 // Grow the prompt box with its content, capped so it never
@@ -454,7 +580,7 @@
                     const response = await fetch(url, {
                         method: 'POST',
                         headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ ...body, workspace: this.workspaceParam() }),
+                        body: JSON.stringify({ ...body, ...this.selection(), workspace: this.workspaceParam() }),
                     });
 
                     const payload = await response.json().catch(() => null);

@@ -4,6 +4,7 @@ use App\Ai\Models\GgufModel;
 use App\Ai\Models\GgufParser;
 use App\Ai\Models\LocalModelRegistry;
 use App\Ai\Models\ModelRunner;
+use App\Ai\Models\SafetensorsParser;
 use Illuminate\Contracts\Cache\Repository;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Http\Client\ConnectionException;
@@ -12,18 +13,6 @@ use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 pest()->use(TestCase::class)->in('Feature');
-
-/**
- * Point the models path at a scratch directory that is removed after the test.
- */
-function withModelsPath(string $path): void
-{
-    config(['whale.models_path' => $path]);
-
-    File::ensureDirectoryExists($path);
-
-    afterEach(fn () => File::deleteDirectory($path));
-}
 
 /**
  * Build a model object directly, bypassing the registry, for unit-level checks.
@@ -151,6 +140,7 @@ it('does not hide a model that a transient read failure once excluded', function
         new Filesystem,
         $parser,
         app(Repository::class),
+        new SafetensorsParser,
     );
 
     expect($registry->models())->toHaveCount(0);

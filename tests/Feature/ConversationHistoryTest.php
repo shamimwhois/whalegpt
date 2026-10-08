@@ -81,6 +81,33 @@ test('another visitor cannot read or change a conversation', function () {
     $this->deleteJson(route('chat.history.destroy', $conversation['id']), [], $intruder)->assertForbidden();
 });
 
+test('another visitor is not even shown a conversation in the list', function () {
+    // The list and the read endpoint must agree. They used to disagree: the
+    // list matched `user_id is null` for any logged-out visitor, so every
+    // unclaimed conversation in the table was listed to every browser, and then
+    // refused with a 403 when one of those rows was opened.
+    $owner = historyHeaders();
+    $intruder = historyHeaders();
+
+    $conversation = $this->postJson(route('chat.history.store'), ['title' => 'Private'], $owner)->json('conversation');
+    $project = $this->postJson(route('chat.history.projects.store'), ['name' => 'Private project'], $owner)->json('project');
+
+    // Both rows are unclaimed: that is the state that used to match every
+    // logged-out visitor at once.
+    expect(Conversation::find($conversation['id'])->user_id)->toBeNull()
+        ->and(Project::find($project['id'])->user_id)->toBeNull();
+
+    $this->getJson(route('chat.history.index'), $owner)
+        ->assertOk()
+        ->assertJsonPath('conversations.0.title', 'Private')
+        ->assertJsonPath('projects.0.name', 'Private project');
+
+    $this->getJson(route('chat.history.index'), $intruder)
+        ->assertOk()
+        ->assertJsonPath('conversations', [])
+        ->assertJsonPath('projects', []);
+});
+
 test('a conversation exports as text, markdown, html and json', function () {
     $headers = historyHeaders();
 

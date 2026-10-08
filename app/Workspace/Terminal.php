@@ -20,11 +20,27 @@ class Terminal
     /**
      * The commands this terminal understands, in help order.
      *
+     * The package tools are only shown once they are switched on, because they
+     * reach outside the workspace.
+     *
      * @var list<string>
      */
     public const COMMANDS = ['pwd', 'ls', 'cd', 'cat', 'echo', 'mkdir', 'touch', 'rm', 'find', 'grep', 'head', 'tail', 'wc'];
 
-    public function __construct(private readonly Workspace $workspace) {}
+    public function __construct(
+        private readonly Workspace $workspace,
+        private readonly ?PackageManager $packages = null,
+    ) {}
+
+    /**
+     * Every command this terminal accepts right now.
+     *
+     * @return list<string>
+     */
+    public function commands(): array
+    {
+        return [...self::COMMANDS, ...($this->packages?->available() ?? [])];
+    }
 
     /**
      * Run one command line.
@@ -39,13 +55,13 @@ class Terminal
         $tokens = array_values(array_filter($tokens, fn (string $token): bool => $token !== ''));
 
         if ($tokens === []) {
-            throw new InvalidArgumentException('Type a command. Allowed: '.implode(', ', self::COMMANDS).'.');
+            throw new InvalidArgumentException('Type a command. Allowed: '.implode(', ', $this->commands()).'.');
         }
 
         $name = array_shift($tokens);
 
-        if (! in_array($name, self::COMMANDS, true)) {
-            throw new InvalidArgumentException("Unknown command [{$name}]. Allowed: ".implode(', ', self::COMMANDS).'.');
+        if (! in_array($name, $this->commands(), true)) {
+            throw new InvalidArgumentException("Unknown command [{$name}]. Allowed: ".implode(', ', $this->commands()).'.');
         }
 
         $cwd = trim(str_replace(chr(92), '/', $cwd), '/');
@@ -109,6 +125,9 @@ class Terminal
             'head' => $this->sliceLines($args, $cwd, fromEnd: false),
             'tail' => $this->sliceLines($args, $cwd, fromEnd: true),
             'wc' => $this->countWords($args, $cwd),
+            // Package installs reach outside the workspace, so they are only
+            // dispatched when they have been explicitly enabled.
+            'composer', 'npm', 'pip' => $this->packages->run($name, $args, $cwd),
         };
     }
 

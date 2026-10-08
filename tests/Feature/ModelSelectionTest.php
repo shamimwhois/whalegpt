@@ -7,14 +7,27 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Validation\ValidationException;
 
 test('the catalog reports only providers with credentials as configured', function () {
+    // The contract is about the configuration the catalog is given, not about
+    // whatever happens to sit in a developer's .env, so the credentials are set
+    // here rather than assumed to be blank.
+    config([
+        'ai.providers.openai.key' => null,
+        'ai.providers.anthropic.key' => null,
+    ]);
+
     $providers = collect(app(ModelCatalog::class)->providers())->keyBy('name');
 
     expect($providers['ollama']['configured'])->toBeTrue()
         ->and($providers['ollama']['capabilities'])->toContain('text')
-        // The key is blank in .env, so OpenAI must not be offered as usable.
         ->and($providers['openai']['configured'])->toBeFalse()
         ->and($providers['anthropic']['configured'])->toBeFalse()
         ->and($providers['anthropic']['environment'])->toBe('ANTHROPIC_API_KEY');
+
+    // Supplying a credential is what flips it: the absence above was a lack of
+    // configuration, not a provider the catalog refuses to offer.
+    config(['ai.providers.openai.key' => 'sk-test']);
+
+    expect(collect(app(ModelCatalog::class)->providers())->keyBy('name')['openai']['configured'])->toBeTrue();
 });
 
 test('the catalog never exposes credentials', function () {

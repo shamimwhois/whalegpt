@@ -1,6 +1,7 @@
 {{-- Slide-over code sandbox: edit a snippet and preview it live in a sandboxed iframe. --}}
 <div
     x-show="sandbox.open"
+    x-on:keydown.escape="closeSandbox()"
     x-transition:enter="transition ease-out duration-200"
     x-transition:enter-start="opacity-0"
     x-transition:enter-end="opacity-100"

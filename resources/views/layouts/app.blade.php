@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="csrf-token" content="{{ csrf_token() }}">
 
-    <title>{{ $title ?? 'Chat' }} Â· {{ config('app.name') }}</title>
+    <title>@yield('title', 'Chat') · {{ config('app.name') }}</title>
 
     <script>
         // Theme must be applied before first paint to avoid a flash.

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Workspace\PackageManager;
 use App\Workspace\Terminal;
 use App\Workspace\Workspace;
 use App\Workspace\WorkspaceContext;
@@ -265,12 +266,32 @@ class WorkspaceController extends Controller
         $files = $workspace->files();
         $name = 'whale-workspace-'.now()->format('Ymd-His').'.zip';
 
+        // ZipArchive lives in ext-zip, which is not always enabled. Failing with
+        // a missing-class error buried the real cause under a 500; saying so is
+        // far more use than a stack trace about ZipArchive.
+        if (! class_exists(\ZipArchive::class)) {
+            abort(501, 'Export needs the PHP zip extension. Enable extension=php_zip in php.ini and reload.');
+        }
+
         return response()->streamDownload(function () use ($workspace, $files): void {
             $temporary = tempnam(sys_get_temp_dir(), 'whale');
 
+            if ($temporary === false) {
+                return;
+            }
+
+            // tempnam() leaves an empty placeholder behind. ZipArchive's
+            // OVERWRITE mode unlinks that file and some builds then fail to
+            // recreate it, which left readfile() pointing at nothing and failed
+            // the whole export with a 500. Removing it first and creating the
+            // archive outright avoids that entirely.
+            @unlink($temporary);
+
             $zip = new \ZipArchive;
 
-            if ($zip->open($temporary, \ZipArchive::OVERWRITE) !== true) {
+            // open() returns true on success and an integer error code on
+            // failure, so this must be a strict comparison.
+            if ($zip->open($temporary, \ZipArchive::CREATE) !== true) {
                 return;
             }
 
@@ -284,7 +305,10 @@ class WorkspaceController extends Controller
 
             $zip->close();
 
-            readfile($temporary);
+            if (is_file($temporary)) {
+                readfile($temporary);
+            }
+
             @unlink($temporary);
         }, $name, [
             'Content-Type' => 'application/zip',
@@ -309,7 +333,10 @@ class WorkspaceController extends Controller
         $cwd = (string) ($validated['cwd'] ?? '');
 
         try {
-            $result = (new Terminal($workspace))->run($validated['command'], $cwd);
+            $result = (new Terminal(
+                $workspace,
+                new PackageManager($workspace, (bool) config('whale.terminal.packages', false)),
+            ))->run($validated['command'], $cwd);
         } catch (InvalidArgumentException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
         }

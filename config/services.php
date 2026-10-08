@@ -35,4 +35,30 @@ return [
         ],
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | OAuth providers (authentication modal)
+    |--------------------------------------------------------------------------
+    |
+    | Google and GitHub sign-in. A provider with no client id and secret is
+    | offered as a disabled button in the modal rather than a broken redirect,
+    | so an install can run on email and password alone.
+    |
+    | The redirect paths are relative so they inherit APP_URL; register the
+    | absolute form ({APP_URL}/auth/google/callback) with each provider.
+    |
+    */
+
+    'google' => [
+        'client_id' => env('GOOGLE_CLIENT_ID'),
+        'client_secret' => env('GOOGLE_CLIENT_SECRET'),
+        'redirect' => env('GOOGLE_REDIRECT_URI', '/auth/google/callback'),
+    ],
+
+    'github' => [
+        'client_id' => env('GITHUB_CLIENT_ID'),
+        'client_secret' => env('GITHUB_CLIENT_SECRET'),
+        'redirect' => env('GITHUB_REDIRECT_URI', '/auth/github/callback'),
+    ],
+
 ];

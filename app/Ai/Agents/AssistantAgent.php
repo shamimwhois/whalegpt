@@ -2,85 +2,50 @@
 
 namespace App\Ai\Agents;
 
-use App\Ai\Tools\DeleteFileTool;
-use App\Ai\Tools\ListFilesTool;
-use App\Ai\Tools\ReadFileTool;
-use App\Ai\Tools\SearchFilesTool;
-use App\Ai\Tools\WriteFileTool;
+use App\Ai\ResponseDepth;
+use App\Ai\ResponseLength;
+use App\Ai\ThinkingEffort;
 use App\Workspace\Workspace;
 use Laravel\Ai\Attributes\MaxSteps;
 use Laravel\Ai\Contracts\Agent;
 use Laravel\Ai\Contracts\Conversational;
+use Laravel\Ai\Contracts\HasProviderOptions;
 use Laravel\Ai\Contracts\HasTools;
 use Laravel\Ai\Messages\Message;
 use Laravel\Ai\Promptable;
-use Stringable;
 
 /**
  * Whale's primary assistant.
  *
- * It answers directly for ordinary conversation and delegates to a specialist
- * sub-agent when a task needs files, research, study material or vector art.
- * The sub-agents run in isolation, so the coordinator is responsible for
- * writing a self-contained brief for each delegation.
+ * It is the chat assistant: it holds the session's sandboxed workspace and
+ * delegates to the specialist sub-agents (coding, research, deep-search,
+ * study, security and vector-art) as soon as a task needs files, current
+ * facts, study material or artwork. Because it extends {@see ChatAgent}, the
+ * streaming path, response-length budgeting and provider-specific options are
+ * inherited, and a workspace-owned reply is guaranteed rather than accidentally
+ * supplied through the tool list.
+ *
+ * @extends ChatAgent<\DateTimeInterface>
  */
 #[MaxSteps(12)]
-class AssistantAgent implements Agent, Conversational, HasTools
+class AssistantAgent extends ChatAgent implements Agent, Conversational, HasProviderOptions, HasTools
 {
     use Promptable;
 
     /**
      * @param  iterable<int, Message>  $messages  The conversation so far.
+     * @param  list<object>  $tools  The tools this turn may use.
      */
     public function __construct(
-        protected readonly Workspace $workspace,
-        protected iterable $messages = [],
-    ) {}
-
-    public function instructions(): Stringable|string
-    {
-        return <<<'PROMPT'
-        You are Whale, a capable and concise AI assistant. You help with coding,
-        research, studying and art, and you have a sandboxed workspace where you
-        can create real files the user can edit and preview.
-
-        Working style:
-        - Answer straightforward questions directly and briefly.
-        - When a task needs files created or changed, delegate to `coding_agent`
-          with a complete brief. When it needs current facts, delegate to
-          `research_agent`. For learning material, use `study_agent`. For SVG
-          artwork, use `art_agent`.
-        - Sub-agents cannot see this conversation, so every brief must stand on
-          its own: include the relevant context, constraints and expected output.
-        - You may use the file tools yourself for quick reads or one-line tweaks.
-        - Prefer doing the work over describing how it could be done.
-        - Use markdown. Keep prose tight; let code and structure carry the detail.
-        - Never invent file contents or results you did not actually produce.
-        PROMPT;
-    }
-
-    /**
-     * The conversation so far, replayed to the provider on every turn.
-     *
-     * @return Message[]
-     */
-    public function messages(): iterable
-    {
-        return $this->messages;
-    }
-
-    public function tools(): iterable
-    {
-        return [
-            new ListFilesTool($this->workspace),
-            new ReadFileTool($this->workspace),
-            new WriteFileTool($this->workspace),
-            new DeleteFileTool($this->workspace),
-            new SearchFilesTool($this->workspace),
-            new CodingAgent($this->workspace),
-            new ResearchAgent,
-            new StudyAgent,
-            new ArtAgent($this->workspace),
-        ];
+        public readonly Workspace $workspace,
+        string $instructions,
+        iterable $messages,
+        iterable $tools,
+        ResponseDepth $depth,
+        ThinkingEffort $effort,
+        ResponseLength $length = ResponseLength::Auto,
+        ?string $model = null,
+    ) {
+        parent::__construct($instructions, $messages, $tools, $depth, $effort, $length, $model);
     }
 }

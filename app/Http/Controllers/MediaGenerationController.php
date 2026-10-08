@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Ai\Agents\ArtAgent;
 use App\Ai\ImageStyle;
 use App\Ai\ModelCatalog;
+use App\Ai\Models\LocalModelRegistry;
 use App\Workspace\Workspace;
 use App\Workspace\WorkspaceContext;
 use Illuminate\Http\JsonResponse;
@@ -21,7 +22,10 @@ use function Laravel\Ai\agent;
 
 class MediaGenerationController extends Controller
 {
-    public function __construct(private readonly ModelCatalog $catalog) {}
+    public function __construct(
+        private readonly ModelCatalog $catalog,
+        private readonly LocalModelRegistry $registry,
+    ) {}
 
     /**
      * Generate an image from a text prompt and store it on the public disk.
@@ -40,21 +44,12 @@ class MediaGenerationController extends Controller
         $prompt = ImageStyle::apply($validated['prompt'], $validated['style'] ?? null);
 
         try {
-            $pending = Image::of($prompt);
-
-            match ($validated['size'] ?? null) {
-                'square' => $pending->square(),
-                'portrait' => $pending->portrait(),
-                'landscape' => $pending->landscape(),
-                default => $pending,
-            };
-
-            $path = $pending->timeout(120)->generate($selection['provider'], $selection['model'])->storePublicly('ai/images', 'public');
+            $path = $this->generateWithFailover($prompt, $validated['size'] ?? null, $selection);
         } catch (Throwable $e) {
             report($e);
 
             return response()->json([
-                'message' => 'Image generation is unavailable. Configure a provider that supports images (OpenAI, Gemini, or xAI) with an API key in your .env file.',
+                'message' => $this->mediaUnavailable('image', $e),
             ], 503);
         }
 
@@ -337,9 +332,135 @@ class MediaGenerationController extends Controller
      * @param  array<string, mixed>  $validated
      * @return array{provider: string|null, model: string|null}
      */
+    /**
+     * Generate an image, falling back to another capable provider if one fails.
+     *
+     * A provider being exhausted or throttled is routine, not exceptional: a
+     * Gemini key with no image quota would otherwise make the whole feature look
+     * broken even when another configured provider could serve it. The requested
+     * provider is always tried first, so an explicit choice is honoured, and the
+     * last failure is the one reported.
+     *
+     * @param  array{provider: string|null, model: string|null}  $selection
+     */
+    private function generateWithFailover(string $prompt, ?string $size, array $selection): string
+    {
+        $attempts = collect($this->capableProviders('image'))
+            ->prepend($selection)
+            ->filter(fn (array $attempt): bool => filled($attempt['provider']))
+            ->unique(fn (array $attempt): string => (string) $attempt['provider']);
+
+        $last = null;
+
+        foreach ($attempts as $attempt) {
+            try {
+                $pending = Image::of($prompt);
+
+                match ($size) {
+                    'square' => $pending->square(),
+                    'portrait' => $pending->portrait(),
+                    'landscape' => $pending->landscape(),
+                    default => $pending,
+                };
+
+                return $pending
+                    ->timeout(120)
+                    ->generate($attempt['provider'], $attempt['model'])
+                    ->storePublicly('ai/images', 'public');
+            } catch (Throwable $e) {
+                report($e);
+
+                $last = $e;
+            }
+        }
+
+        throw $last ?? new RuntimeException('No configured provider can generate images.');
+    }
+
+    /**
+     * Every configured provider that can serve a capability.
+     *
+     * This reads config/ai.php directly rather than going through the catalog.
+     * The catalog also scans the local model directory, which parses multi-gigabyte
+     * GGUF headers, and asks each runtime what it holds over HTTP — work that has
+     * nothing to do with hosted media providers and would add seconds to every
+     * image request.
+     *
+     * @return list<array{provider: string, model: string|null}>
+     */
+    private function capableProviders(string $capability): array
+    {
+        return collect((array) config('ai.providers', []))
+            ->filter(fn (mixed $configuration): bool => is_array($configuration))
+            ->filter(fn (array $configuration): bool => filled($configuration['key'] ?? $configuration['url'] ?? null))
+            ->map(fn (array $configuration, string $name): array => [
+                'provider' => $name,
+                'model' => $this->catalog->configuredModel($name, $capability),
+            ])
+            ->filter(fn (array $candidate): bool => filled($candidate['model']))
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Explain why a media request failed, naming the actual cause.
+     *
+     * The previous message told a user who already had a working Gemini key to
+     * configure a provider they had configured, which sent them looking in the
+     * wrong place. When a provider is present the likely fault is the model id
+     * or the quota, so that is what gets reported instead.
+     */
+    private function mediaUnavailable(string $capability, Throwable $exception): string
+    {
+        $configured = collect($this->catalog->providers())
+            ->filter(fn (array $provider): bool => $provider['configured'])
+            ->filter(fn (array $provider): bool => $this->catalog->supports($provider['name'], $capability))
+            ->map(fn (array $provider): string => $provider['name'])
+            ->values();
+
+        if ($configured->isEmpty()) {
+            return sprintf(
+                '%s is unavailable: no configured provider offers it. Set an API key and a matching model in your .env file.',
+                ucfirst($capability),
+            );
+        }
+
+        return sprintf(
+            '%s failed using %s. A provider is configured, so check the %s model id and the provider quota. (%s)',
+            ucfirst($capability),
+            $configured->implode(', '),
+            $capability,
+            $exception->getMessage(),
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $validated
+     * @return array{provider: string|null, model: string|null}
+     */
     private function resolveFor(array $validated, string $capability): array
     {
-        $selection = $this->catalog->resolve($validated['provider'] ?? null, $validated['model'] ?? null);
+        $requested = $validated['provider'] ?? null;
+
+        // The default provider is chosen for chat, not for every capability:
+        // AI_PROVIDER is frequently a local runtime that only does text, so
+        // falling back to it blindly is what made image generation report itself
+        // unavailable while a capable provider was configured. Pick one that can
+        // actually serve the capability instead.
+        if (blank($requested)) {
+            $requested = $this->capableProvider($capability) ?? config('ai.default');
+        }
+
+        $selection = $this->catalog->resolve($requested, $validated['model'] ?? null);
+
+        // The selection is shared with chat, where a text model is the whole
+        // point. Handing that same selection to an image request would ask a
+        // checkpoint that cannot paint to paint, so a local model that lacks
+        // the capability is dropped and a capable provider is chosen instead.
+        if ($this->localModelLacks($selection, $capability)) {
+            $requested = $this->capableProvider($capability) ?? config('ai.default');
+            $selection = $this->catalog->resolve($requested, null);
+        }
 
         if ($selection['provider'] === null) {
             return $selection;
@@ -353,6 +474,47 @@ class MediaGenerationController extends Controller
         }
 
         return $selection;
+    }
+
+    /**
+     * Whether a resolved selection is a local file that cannot serve a capability.
+     *
+     * Hosted providers are left alone: their model list already reflects what
+     * they are configured for, and resolve() has rejected anything unusable.
+     * Only a local file needs this, because its capabilities were inferred from
+     * tensors rather than declared, and the same file is offered to chat, the
+     * studio and the workspace alike.
+     *
+     * @param  array{provider: string|null, model: string|null}  $selection
+     */
+    private function localModelLacks(array $selection, string $capability): bool
+    {
+        if ($selection['provider'] !== ModelCatalog::LOCAL_PROVIDER || blank($selection['model'])) {
+            return false;
+        }
+
+        $model = $this->registry->find($selection['model']);
+
+        return $model !== null && ! in_array($capability, $model->capabilities(), true);
+    }
+
+    /**
+     * A configured provider that can serve a capability.
+     *
+     * @return string|null The provider name, or null when none is configured.
+     */
+    private function capableProvider(string $capability): ?string
+    {
+        $default = config('ai.default');
+        $candidates = $this->capableProviders($capability);
+
+        // The configured default wins when it qualifies, so a deliberate choice
+        // is never silently overridden.
+        $preferred = collect($candidates)
+            ->first(fn (array $candidate): bool => $candidate['provider'] === $default)
+            ?? collect($candidates)->first();
+
+        return $preferred['provider'] ?? null;
     }
 
     /**

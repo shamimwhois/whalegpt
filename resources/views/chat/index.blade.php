@@ -15,6 +15,7 @@
             video: @js(route('chat.video')),
             models: @js(route('chat.models')),
             localModels: @js(route('chat.local-models')),
+            customProviders: @js(route('chat.custom-providers')),
             capabilities: @js(route('chat.capabilities')),
             enhance: @js(route('chat.enhance')),
             history: @js(route('chat.history.index')),
@@ -32,15 +33,22 @@
 
             <x-chat.header />
 
-            <div
+            {{-- The conversation is the page's primary content, so the scroller
+                 is the main landmark. The header above it stays a banner
+                 because a <header> only stops being one when it is nested
+                 inside a <main>. --}}
+            <main
                 x-ref="scroller"
                 x-on:scroll="onScroll()"
                 x-on:click="handleCodeBlockClick($event)"
+                aria-label="Conversation"
                 class="whale-scroll flex-1 overflow-y-auto overscroll-contain px-4 py-6 sm:px-6 lg:px-8"
             >
                 <div class="mx-auto flex min-h-full max-w-3xl flex-col">
 
-                    {{-- Empty state: the greeting and starter prompts sit where the transcript will be. --}}
+                    {{-- Empty state: just the greeting. The starter prompts moved
+                         into the composer as a rotating placeholder, so there is
+                         one thing to click and the hint sits where typing starts. --}}
                     <div
                         x-show="messages.length === 0"
                         class="flex flex-1 flex-col items-center justify-center gap-8 py-10"
@@ -51,25 +59,13 @@
                                 Ask anything, attach a file, or generate an image.
                             </p>
                         </div>
-
-                        <div class="grid w-full max-w-xl gap-2 sm:grid-cols-3">
-                            @foreach (['Summarize this thread', 'Write a migration', 'Explain queues'] as $chip)
-                                <button
-                                    type="button"
-                                    x-on:click="draft = @js($chip); $nextTick(() => $refs.input.focus())"
-                                    class="rounded-xl border border-black/[0.08] bg-white px-3 py-2.5 text-left
-                                           text-sm text-[#0d0d0d] transition hover:bg-black/[0.04]
-                                           focus-visible:outline-2 focus-visible:outline-accent
-                                           dark:border-white/[0.14] dark:bg-[#303030] dark:text-[#ececec]
-                                           dark:hover:bg-white/[0.06]"
-                                >
-                                    {{ $chip }}
-                                </button>
-                            @endforeach
-                        </div>
                     </div>
 
-                    <div class="flex flex-col gap-6" x-show="messages.length > 0" style="display:none">
+                    <div
+                        class="whale-transcript flex flex-col"
+                        x-show="messages.length > 0"
+                        style="display:none"
+                    >
                         <div class="flex items-center gap-3">
                             <span class="h-px flex-1 bg-black/[0.08] dark:bg-white/[0.12]"></span>
                             <span class="text-[11px] font-medium text-[#8f8f8f]">Today</span>
@@ -83,7 +79,33 @@
                         <x-chat.typing />
                     </div>
                 </div>
+            </main>
+
+            {{-- A failure has to say so where the user is already looking. This
+                 clears itself rather than demanding a click, so a bar cannot be
+                 left stranded over the composer by a transient network error. --}}
+            <div
+                x-show="notice"
+                class="mx-4 mb-3 flex items-start gap-3 rounded-xl border border-rose-500/25 bg-rose-500/[0.07] px-3.5 py-2.5 text-sm text-rose-600 dark:border-rose-400/25 dark:bg-rose-400/10 dark:text-rose-400"
+                role="alert"
+                style="display:none"
+            >
+                <p class="flex-1 leading-relaxed" x-text="notice"></p>
+
+                <button
+                    type="button"
+                    x-on:click="dismissNotice()"
+                    aria-label="Dismiss this message"
+                    class="-m-1 shrink-0 rounded-md p-1 opacity-70 transition-opacity hover:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+                >
+                    <x-ui.icon name="close" class="h-4 w-4" />
+                </button>
             </div>
+
+            {{-- Status changes are announced rather than drawn: "Thinking…" and
+                 "Responding…" move too quickly to be worth a bar of their own,
+                 but they are exactly what a screen reader would otherwise miss. --}}
+            <div class="sr-only" aria-live="polite" x-text="announcement"></div>
 
             <x-chat.composer />
 
@@ -91,7 +113,17 @@
 
             <x-chat.settings />
 
+            {{-- Ctrl/Cmd+K from anywhere on the page, including the composer. --}}
+            <div
+                x-on:keydown.window="if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); togglePalette(); }"
+                x-on:keydown.escape.window="if (palette.open) { closePalette(); }"
+            ></div>
+
+            <x-ui.command-palette />
+
             <x-chat.project-dialog />
+
+            <x-ui.confirm-dialog />
 
             <x-chat.board />
         </div>
@@ -115,6 +147,33 @@
             const MODEL_STORAGE_KEY = 'whale.model';
             const DEPTH_STORAGE_KEY = 'whale.depth';
             const EFFORT_STORAGE_KEY = 'whale.thinking';
+            const LENGTH_STORAGE_KEY = 'whale.length';
+            const SIDEBAR_COLLAPSED_STORAGE_KEY = 'whale.sidebar.collapsed';
+            const SIDEBAR_WIDTH_STORAGE_KEY = 'whale.sidebar.width';
+            const HISTORY_LAYOUT_STORAGE_KEY = 'whale.history.layout';
+            const READING_SCALE_STORAGE_KEY = 'whale.reading.scale';
+            const DENSITY_STORAGE_KEY = 'whale.transcript.density';
+            const REDUCE_MOTION_STORAGE_KEY = 'whale.reduce.motion';
+
+            // Starter prompts, shown in the composer as a rotating placeholder.
+            // They used to be buttons under the greeting; a hint that sits
+            // where typing starts costs no clicks and cannot be sent by
+            // accident, which a prefilled prompt could.
+            const STARTER_PROMPTS = [
+                'Summarize this thread',
+                'Write a migration',
+                'Explain queues',
+            ];
+
+            // How long each hint holds before the next one takes its place.
+            const STARTER_PROMPT_INTERVAL = 4000;
+
+            // The width limits are shared by the stored value, the drag handler
+            // and the reset button, so the sidebar has one legal range rather
+            // than three that can disagree.
+            const SIDEBAR_MIN_WIDTH = 200;
+            const SIDEBAR_MAX_WIDTH = 380;
+            const SIDEBAR_DEFAULT_WIDTH = 260;
 
             const escapeText = (value) => String(value ?? '')
                 .replace(/&/g, '&amp;')
@@ -169,7 +228,26 @@
                 routes,
                 endpoint: routes.send,
                 mobileSidebar: false,
+
+                // Sidebar shape. All three are user preferences, so they are
+                // restored on load and persisted on change rather than being
+                // derived from the viewport — a desktop user who collapses the
+                // sidebar should not have it spring back on refresh.
+                sidebarCollapsed: false,
+                sidebarWidth: 260,
+                historyLayout: 'list',
+
+                // Reading preferences. These write CSS custom properties and one
+                // class on the page root rather than binding to individual
+                // elements, so a change repaints the whole transcript in one go
+                // instead of touching a hundred nodes.
+                readingScale: 1,
+                transcriptDensity: 1.5,
+                reduceMotion: false,
+
                 draft: '',
+                starterPromptIndex: 0,
+                starterPromptTimer: null,
                 searchQuery: '',
                 messages: [],
                 pendingFiles: [],
@@ -197,15 +275,46 @@
                     busy: false,
                     error: null,
                     history: [],
+
+                    // Shape gestures need the drag start point and a scratch
+                    // layer; neither is a template-safe default.
+                    startX: 0,
+                    startY: 0,
+                    preview: null,
+
+                    /**
+                     * Whether the current tool is dragged rather than painted.
+                     *
+                     * A getter rather than a flag, so it can never disagree with
+                     * `tool` after a selection change.
+                     */
+                    get isShape() {
+                        return ['line', 'rect', 'ellipse'].includes(this.tool);
+                    },
+
+                    /**
+                     * Whether the tool paints freehand.
+                     */
+                    get isFreehand() {
+                        return ['brush', 'eraser'].includes(this.tool);
+                    },
                 },
                 attachMenuOpen: false,
                 pickerOpen: false,
                 settingsOpen: false,
                 modeOpen: false,
-                depthOpen: false,
                 exportOpen: false,
                 modelFilter: 'all',
                 enhancing: false,
+
+                // Response-shaping dropdowns. All three now belong to the
+                // composer alone; the header used to open `depthOpen` too, which
+                // is why both menus appeared at once.
+                depthOpen: false,
+                effortOpen: false,
+                lengthOpen: false,
+                length: 'auto',
+                lengthIndex: 0,
                 enhancedDraft: null,
                 enhancedOriginal: null,
 
@@ -234,6 +343,22 @@
                     { id: 'xhigh', label: 'Extra high', description: 'Maximum deliberation for the hardest questions.' },
                 ],
 
+                lengths: [
+                    { id: 'auto', label: 'Auto', description: 'The provider decides how long to write.' },
+                    { id: 'short', label: 'Short', description: 'A few sentences. Good for quick answers.' },
+                    { id: 'medium', label: 'Medium', description: 'A paragraph or two with room to explain.' },
+                    { id: 'long', label: 'Long', description: 'As long as it takes, including code and detail.' },
+                ],
+
+                // Export formats, rendered as label + file extension in the header menu.
+                formats: [
+                    ['txt', 'Plain text'],
+                    ['md', 'Markdown'],
+                    ['html', 'HTML'],
+                    ['json', 'JSON'],
+                    ['pdf', 'PDF'],
+                ],
+
                 // @-mentions and slash commands in the composer.
                 mentionCatalog: [],
                 mentionFiles: [],
@@ -252,6 +377,17 @@
                 modelName: null,
                 localModels: [],
                 modelsPath: '',
+                // Files in the models directory that look like models but cannot
+                // be read, and the runtimes the detected models would use.
+                unreadableModels: [],
+                runtimeHealth: {},
+                // Custom providers declared in WHALE_CUSTOM_PROVIDERS. `selection`
+                // holds the ids ticked in the discovered list, keyed by provider,
+                // so an import sends only what was actually chosen.
+                customProviders: [],
+                customProviderDiscovered: {},
+                customProviderSelection: {},
+                customProviderBusy: {},
                 ocrPending: false,
                 fileError: null,
                 editingId: null,
@@ -261,6 +397,7 @@
                 // Sidebar management (projects + history).
                 projects: [],
                 conversations: [],
+                archived: [],
                 activeConversationId: null,
                 shareUrl: null,
                 shareUrlFor: null,
@@ -268,12 +405,48 @@
                 projectDraft: '',
                 draggedConversationId: null,
 
+                // The one destructive-action dialog, described as data so the
+                // markup stays a static template. See components/ui/confirm-dialog.
+                confirmDialog: null,
+
+                // Which row's overflow menu is open, and what it was opened for.
+                // Keyed rather than a single flag so a menu closes when another
+                // one opens instead of two overlapping.
+                menuFor: null,
+                renamingId: null,
+                renameDraft: '',
+
+                // The command palette. Modelled on the workspace IDE's palette
+                // rather than a new shape: one query, one highlighted row,
+                // arrow keys to move, Enter to run. Commands carry their own
+                // `run` so the list is data, not a switch statement in a click
+                // handler that would have to grow a branch per command.
+                palette: { open: false, query: '', index: 0 },
+
+                // Projects rename in place too, but they are not part of the
+                // chat list, so they get their own key rather than sharing the
+                // chat one and fighting over it.
+                renamingProjectId: null,
+                projectRenameDraft: '',
+
+                // The resizer listens on the window rather than the handle,
+                // because a drag that outruns the cursor would otherwise be
+                // cut off the moment the pointer left the 4px handle.
+                resizingSidebar: false,
+
                 // idle | thinking | responding | stopped | error
                 status: 'idle',
                 isStreaming: false,
                 abortController: null,
                 isPinnedToBottom: true,
                 lastError: null,
+
+                // Every failure below writes lastError, but nothing rendered it:
+                // a chat that would not open, a send that failed and a rename
+                // that was rejected were all indistinguishable from doing
+                // nothing. This is the visible half of it.
+                notice: null,
+                noticeTimer: null,
 
                 get isTyping() {
                     return this.status === 'thinking';
@@ -307,12 +480,32 @@
                         { id: 'all', label: 'All' },
                         { id: 'reasoning', label: 'Reasoning' },
                         { id: 'fast', label: 'Fast' },
+                        { id: 'image', label: 'Image' },
+                        { id: 'media', label: 'Media' },
                     ];
                 },
 
                 modelVisible(model) {
-                    return model.configured
-                        && (this.modelFilter === 'all' || model.type === this.modelFilter);
+                    if (!model.configured) {
+                        return false;
+                    }
+
+                    if (this.modelFilter === 'all') {
+                        return true;
+                    }
+
+                    // A media model filters by what it makes rather than by how it
+                    // chats, so an image checkpoint shows under Image and Media
+                    // rather than nowhere at all.
+                    if (this.modelFilter === 'media') {
+                        return model.media === true;
+                    }
+
+                    if (model.media === true) {
+                        return (model.capabilities ?? []).includes(this.modelFilter);
+                    }
+
+                    return model.type === this.modelFilter;
                 },
 
                 // Hide a provider heading that has nothing left to show under
@@ -356,6 +549,31 @@
                 setEffort(id) {
                     this.thinking = id;
                     this.store(EFFORT_STORAGE_KEY, id);
+                },
+
+                // The slider carries an index, because a range input speaks in
+                // numbers and the setting is a named tier. Converting in one
+                // place keeps the tier list the single source of truth.
+                lengthLabel() {
+                    return this.lengths[this.lengthIndex]?.label ?? 'Auto';
+                },
+
+                setLengthIndex(index) {
+                    const clamped = Math.max(0, Math.min(this.lengths.length - 1, Number(index) || 0));
+
+                    this.lengthIndex = clamped;
+                    this.length = this.lengths[clamped]?.id ?? 'auto';
+                    this.store(LENGTH_STORAGE_KEY, this.length);
+                },
+
+                syncLengthIndex() {
+                    const index = this.lengths.findIndex((option) => option.id === this.length);
+
+                    this.lengthIndex = index === -1 ? 0 : index;
+                },
+
+                lengthDescription() {
+                    return this.lengths[this.lengthIndex]?.description ?? '';
                 },
 
                 // Persisting a preference must never break the page it sits on.
@@ -704,8 +922,31 @@
                     this.board.drawing = true;
                     this.board.lastX = point.x;
                     this.board.lastY = point.y;
+                    this.board.startX = point.x;
+                    this.board.startY = point.y;
 
                     const ctx = this.boardContext();
+
+                    // A shape is drawn onto a scratch layer that is composited
+                    // over the canvas, so dragging shows only an outline and the
+                    // result is committed on release. Painting straight onto the
+                    // canvas would leave a half-drawn rectangle if the gesture was
+                    // abandoned part way.
+                    if (this.board.isShape) {
+                        this.board.preview = document.createElement('canvas');
+                        this.board.preview.width = canvas.width;
+                        this.board.preview.height = canvas.height;
+
+                        const overlay = this.$refs.boardOverlay;
+
+                        if (overlay) {
+                            overlay.width = canvas.width;
+                            overlay.height = canvas.height;
+                        }
+
+                        return;
+                    }
+
                     ctx.beginPath();
                     ctx.arc(point.x, point.y, ctx.lineWidth / 2, 0, Math.PI * 2);
                     ctx.fillStyle = this.board.colour;
@@ -718,6 +959,12 @@
                     }
 
                     const point = this.boardPoint(event);
+
+                    if (this.board.isShape) {
+                        this.boardDrawPreview(point);
+                        return;
+                    }
+
                     const ctx = this.boardContext();
 
                     ctx.beginPath();
@@ -729,8 +976,94 @@
                     this.board.lastY = point.y;
                 },
 
-                boardPointerUp() {
+                /**
+                 * Render the in-progress shape onto the scratch layer.
+                 */
+                boardDrawPreview(point) {
+                    const preview = this.board.preview;
+
+                    if (!preview) {
+                        return;
+                    }
+
+                    const ctx = preview.getContext('2d');
+                    ctx.clearRect(0, 0, preview.width, preview.height);
+
+                    this.boardShape(ctx, this.board.startX, this.board.startY, point.x, point.y);
+
+                    const overlay = this.$refs.boardOverlay;
+
+                    if (overlay?.getContext) {
+                        const visible = overlay.getContext('2d');
+                        visible.clearRect(0, 0, overlay.width, overlay.height);
+                        visible.drawImage(preview, 0, 0);
+                    }
+                },
+
+                /**
+                 * Trace one shape, shared by the preview and the final commit so
+                 * what was dragged is exactly what is kept.
+                 */
+                boardShape(ctx, x1, y1, x2, y2) {
+                    const left = Math.min(x1, x2);
+                    const top = Math.min(y1, y2);
+                    const width = Math.abs(x2 - x1);
+                    const height = Math.abs(y2 - y1);
+
+                    ctx.beginPath();
+
+                    switch (this.board.tool) {
+                        case 'line':
+                            ctx.moveTo(x1, y1);
+                            ctx.lineTo(x2, y2);
+                            break;
+                        case 'rect':
+                            ctx.rect(left, top, width, height);
+                            break;
+                        case 'ellipse':
+                            ctx.ellipse(
+                                left + width / 2,
+                                top + height / 2,
+                                width / 2,
+                                height / 2,
+                                0,
+                                0,
+                                Math.PI * 2,
+                            );
+                            break;
+                        default:
+                            return;
+                    }
+
+                    ctx.stroke();
+                },
+
+                boardPointerUp(event) {
+                    if (!this.board.drawing) {
+                        return;
+                    }
+
                     this.board.drawing = false;
+
+                    if (this.board.isShape && event) {
+                        const point = this.boardPoint(event);
+                        const ctx = this.boardContext();
+
+                        // The shape is only committed now, so a cancelled drag
+                        // leaves nothing behind on the canvas.
+                        this.boardShape(ctx, this.board.startX, this.board.startY, point.x, point.y);
+
+                        this.board.preview = null;
+
+                        const overlay = this.$refs.boardOverlay;
+
+                        if (overlay?.getContext) {
+                            const visible = overlay.getContext('2d');
+                            visible.clearRect(0, 0, overlay.width, overlay.height);
+                        }
+                    }
+
+                    this.board.resultUrl = null;
                 },
 
                 boardPush() {
@@ -742,7 +1075,9 @@
 
                     this.board.history.push(canvas.toDataURL('image/png'));
 
-                    if (this.board.history.length > 12) {
+                    // A shape is one history entry, so the cap is raised to keep
+                    // a reasonable number of brush strokes alongside them.
+                    if (this.board.history.length > 24) {
                         this.board.history.shift();
                     }
                 },
@@ -1020,10 +1355,23 @@
                         return;
                     }
 
-                    await fetch(`${this.routes.history}/${this.activeConversationId}/share`, {
-                        method: 'DELETE',
-                        headers: this.headers(),
-                    });
+                    try {
+                        const response = await fetch(`${this.routes.history}/${this.activeConversationId}/share`, {
+                            method: 'DELETE',
+                            headers: this.headers(),
+                        });
+
+                        if (!response.ok) {
+                            throw new Error('Sharing could not be turned off.');
+                        }
+                    } catch (error) {
+                        // The link is still live, so the share UI has to stay up
+                        // as well — clearing it here would have claimed the chat
+                        // was private when it was not.
+                        this.showNotice(error.message ?? 'Sharing could not be turned off.');
+
+                        return;
+                    }
 
                     this.shareUrl = null;
                     this.shareUrlFor = null;
@@ -1050,6 +1398,7 @@
 
                         this.projects = payload?.projects ?? [];
                         this.conversations = payload?.conversations ?? [];
+                        this.archived = payload?.archived ?? [];
                     } catch (error) {
                         // The sidebar simply stays empty; chat still works.
                     }
@@ -1075,43 +1424,543 @@
                     }
                 },
 
-                async renameProject(project) {
-                    const name = window.prompt('Project name', project.name);
+                // The sidebar's shape is three separate preferences, and each is restored
+                // independently so one stale value cannot take the others with
+                // it.
+                applyStoredSidebar() {
+                    // Number(null) is 0 and Number('') is 0 as well, so an absent
+                    // key would pass the isFinite check and clamp the 260px
+                    // default straight down to the 200px minimum. Only a value
+                    // that was genuinely written counts as a preference.
+                    const storedWidth = this.read(SIDEBAR_WIDTH_STORAGE_KEY);
 
-                    if (!name || name === project.name) {
+                    if (storedWidth !== null && String(storedWidth).trim() !== '') {
+                        const width = Number(storedWidth);
+
+                        if (Number.isFinite(width)) {
+                            this.sidebarWidth = this.clampSidebarWidth(width);
+                        }
+                    }
+
+                    this.sidebarCollapsed = this.read(SIDEBAR_COLLAPSED_STORAGE_KEY) === '1';
+                    this.historyLayout = this.read(HISTORY_LAYOUT_STORAGE_KEY) === 'grid' ? 'grid' : 'list';
+                },
+
+                // Clamped in one place: the stored value, the drag and the reset
+                // button all pass through here, so the sidebar can never end up
+                // too narrow to read or wide enough to swallow the transcript.
+                clampSidebarWidth(value) {
+                    const width = Number(value) || SIDEBAR_MIN_WIDTH;
+
+                    return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(width)));
+                },
+
+                setSidebarWidth(value) {
+                    this.sidebarWidth = this.clampSidebarWidth(value);
+                    this.store(SIDEBAR_WIDTH_STORAGE_KEY, String(this.sidebarWidth));
+                },
+
+                toggleSidebar() {
+                    // Below the breakpoint the sidebar is an overlay, so the
+                    // toggle has to dismiss it rather than collapse it — there
+                    // is no rail to collapse into on a phone.
+                    if (window.matchMedia('(max-width: 1023px)').matches) {
+                        this.mobileSidebar = false;
+
                         return;
                     }
 
-                    await fetch(`${this.routes.history}/projects/${project.id}`, {
+                    this.sidebarCollapsed = !this.sidebarCollapsed;
+                    this.store(SIDEBAR_COLLAPSED_STORAGE_KEY, this.sidebarCollapsed ? '1' : '0');
+                },
+
+                startSidebarResize(event) {
+                    this.resizingSidebar = true;
+
+                    // Capture on the handle but move on the window: a drag that
+                    // outruns the 4px handle has to keep resizing.
+                    event.target.setPointerCapture?.(event.pointerId);
+
+                    const move = (moveEvent) => {
+                        this.setSidebarWidth(moveEvent.clientX);
+                    };
+
+                    const stop = () => {
+                        this.resizingSidebar = false;
+
+                        window.removeEventListener('pointermove', move);
+                        window.removeEventListener('pointerup', stop);
+                        window.removeEventListener('pointercancel', stop);
+                    };
+
+                    window.addEventListener('pointermove', move);
+                    window.addEventListener('pointerup', stop);
+                    window.addEventListener('pointercancel', stop);
+                },
+
+                resetSidebarWidth() {
+                    this.setSidebarWidth(SIDEBAR_DEFAULT_WIDTH);
+                },
+
+                setHistoryLayout(layout) {
+                    this.historyLayout = layout === 'grid' ? 'grid' : 'list';
+                    this.store(HISTORY_LAYOUT_STORAGE_KEY, this.historyLayout);
+                },
+
+                toggleHistoryLayout() {
+                    this.setHistoryLayout(this.historyLayout === 'grid' ? 'list' : 'grid');
+                },
+
+                // ---- Reading preferences ---------------------------------------
+                // Each preference is clamped to the same bounds the CSS honours,
+                // so a hand-edited localStorage value cannot produce a layout
+                // the stylesheet has no rule for.
+                applyPreferences() {
+                    const scale = Number(this.read(READING_SCALE_STORAGE_KEY));
+                    const density = Number(this.read(DENSITY_STORAGE_KEY));
+
+                    this.readingScale = Number.isFinite(scale) && scale > 0
+                        ? Math.min(1.25, Math.max(0.9, scale))
+                        : 1;
+
+                    // Density is a gap in rem, stored as a plain number of rem.
+                    this.transcriptDensity = Number.isFinite(density) && density > 0
+                        ? Math.min(3, Math.max(0.5, density))
+                        : 1.5;
+
+                    this.reduceMotion = this.read(REDUCE_MOTION_STORAGE_KEY) === '1';
+                    this.paintPreferences();
+                },
+
+                // The single place the DOM is touched. Writing an invalid value
+                // here is a no-op on the stylesheet, so this is also where a
+                // stale store gets corrected rather than left to fail silently.
+                paintPreferences() {
+                    const root = document.documentElement;
+
+                    root.style.setProperty('--reading-scale', String(this.readingScale));
+                    root.style.setProperty('--density-gap', `${this.transcriptDensity}rem`);
+                    root.classList.toggle('reduce-motion', this.reduceMotion);
+                },
+
+                setReadingScale(value) {
+                    this.readingScale = Math.min(1.25, Math.max(0.9, Number(value) || 1));
+                    this.store(READING_SCALE_STORAGE_KEY, String(this.readingScale));
+                    this.paintPreferences();
+                },
+
+                setTranscriptDensity(value) {
+                    this.transcriptDensity = Math.min(3, Math.max(0.5, Number(value) || 1.5));
+                    this.store(DENSITY_STORAGE_KEY, String(this.transcriptDensity));
+                    this.paintPreferences();
+                },
+
+                setReduceMotion(value) {
+                    this.reduceMotion = Boolean(value);
+                    this.store(REDUCE_MOTION_STORAGE_KEY, this.reduceMotion ? '1' : '0');
+                    this.paintPreferences();
+                },
+
+                resetPreferences() {
+                    this.setReadingScale(1);
+                    this.setTranscriptDensity(1.5);
+                    this.setReduceMotion(false);
+                },
+
+                // One place decides what "grid" means, because it is applied to
+                // three different containers: the date groups, the chats nested
+                // in a project, and the archive — plus the rows inside them,
+                // which have to agree or a collapsed sidebar renders grid cards
+                // inside a single-column list. Grid mode is only ever hidden
+                // while collapsed, where there is no room for two columns.
+                isGridHistory() {
+                    return this.historyLayout === 'grid' && !this.sidebarCollapsed;
+                },
+
+                historyLayoutClass() {
+                    return this.isGridHistory() ? 'grid grid-cols-2 gap-1.5' : 'space-y-0.5';
+                },
+
+                // Search covered only the unfiled chats, so anything filed under
+                // a project was invisible to it — which read as "search is
+                // broken" rather than "search is scoped".
+                matchesSearch(chat) {
+                    const query = this.searchQuery.trim().toLowerCase();
+
+                    if (!query) {
+                        return true;
+                    }
+
+                    return [chat.title, chat.preview]
+                        .filter(Boolean)
+                        .some((field) => String(field).toLowerCase().includes(query));
+                },
+
+                visibleConversations() {
+                    return this.conversations.filter((chat) => this.matchesSearch(chat));
+                },
+
+                visibleProjectConversations(project) {
+                    return project.conversations.filter((chat) => this.matchesSearch(chat));
+                },
+
+                visibleProjects() {
+                    return this.projects.filter((project) => this.visibleProjectConversations(project).length > 0);
+                },
+
+                hasSearchResults() {
+                    if (!this.searchQuery.trim()) {
+                        return this.conversations.length > 0 || this.projects.length > 0;
+                    }
+
+                    return this.visibleConversations().length > 0 || this.visibleProjects().length > 0;
+                },
+
+                // Date groups need a real timestamp to compare, which is why the
+                // history payload carries an ISO `updated_at` alongside the
+                // human one. Boundaries are start-of-day, so a thread moved at
+                // 23:50 and one moved at 00:10 land in different groups.
+                conversationGroups() {
+                    // Everything is bucketed against the start of today rather
+                    // than against "24 hours ago", so a thread touched at 23:50
+                    // last night and one touched at 00:10 this morning land in
+                    // different groups instead of both being "today".
+                    const startOfToday = new Date();
+                    startOfToday.setHours(0, 0, 0, 0);
+
+                    const dayMs = 24 * 60 * 60 * 1000;
+                    const midnight = startOfToday.getTime();
+
+                    const buckets = [
+                        { label: 'Today', max: 1 },
+                        { label: 'Yesterday', max: 2 },
+                        { label: 'Previous 7 days', max: 7 },
+                        { label: 'Previous 30 days', max: 30 },
+                    ];
+
+                    const groups = new Map(buckets.map((bucket) => [bucket.label, []]));
+                    groups.set('Older', []);
+
+                    for (const chat of this.visibleConversations()) {
+                        const updated = Date.parse(chat.updated_at ?? '');
+
+                        // An unparseable timestamp is not worth hiding a thread
+                        // over, so it falls back to the oldest group.
+                        const days = Number.isNaN(updated)
+                            ? Infinity
+                            : Math.floor((midnight - updated) / dayMs) + 1;
+
+                        const match = buckets.find((bucket) => days <= bucket.max);
+
+                        groups.get(match?.label ?? 'Older').push(chat);
+                    }
+
+                    return [...groups.entries()]
+                        .filter(([, chats]) => chats.length > 0)
+                        .map(([label, chats]) => ({ label, chats }));
+                },
+
+                archivedGroups() {
+                    const dayMs = 24 * 60 * 60 * 1000;
+                    const now = Date.now();
+
+                    const today = [];
+                    const earlier = [];
+
+                    for (const chat of this.archived) {
+                        const updated = Date.parse(chat.updated_at ?? '');
+                        const age = Number.isNaN(updated) ? Infinity : now - updated;
+
+                        (age < dayMs ? today : earlier).push(chat);
+                    }
+
+                    return [
+                        { label: 'Archived today', chats: today },
+                        { label: 'Archived earlier', chats: earlier },
+                    ].filter((group) => group.chats.length > 0);
+                },
+
+                // ---- Command palette -------------------------------------------------
+                // Two lists: the commands you can invoke, and the threads you
+                // can jump to. One query filters both and the thread results are
+                // ranked above commands, because "the conversation about the
+                // migration" is almost always what Ctrl+K was pressed for.
+                openPalette() {
+                    // Recorded before the state flips: once the dialog has the
+                    // caret, "what opened this" is no longer document.activeElement
+                    // and closing would strand the user in a hidden input.
+                    this.returnFocusTo = document.activeElement;
+
+                    this.palette = { open: true, query: '', index: 0 };
+                    this.$nextTick(() => this.$refs.paletteInput?.focus());
+                },
+
+                closePalette() {
+                    this.palette.open = false;
+                },
+
+                togglePalette() {
+                    if (this.palette.open) {
+                        this.closePalette();
+                    } else {
+                        this.openPalette();
+                    }
+                },
+
+                movePalette(delta) {
+                    const items = this.paletteItems();
+
+                    if (items.length === 0) {
+                        return;
+                    }
+
+                    this.palette.index = (this.palette.index + delta + items.length) % items.length;
+                },
+
+                runPalette() {
+                    const item = this.paletteItems()[this.palette.index] ?? this.paletteItems()[0];
+
+                    if (item) {
+                        this.runPaletteItem(item);
+                    }
+                },
+
+                async runPaletteItem(item) {
+                    this.closePalette();
+
+                    // `run` is a function on the item, which is why the list can
+                    // be built as data. Async so a thread can load without the
+                    // palette waiting on it.
+                    await item.run();
+                },
+
+                paletteItems() {
+                    const query = this.palette.query.trim().toLowerCase();
+
+                    const threads = this.conversations
+                        .filter((chat) => !query
+                            || (chat.title ?? '').toLowerCase().includes(query)
+                            || (chat.preview ?? '').toLowerCase().includes(query))
+                        .slice(0, 30)
+                        .map((chat) => ({
+                            id: `chat:${chat.id}`,
+                            kind: 'chat',
+                            label: chat.title || 'Untitled',
+                            hint: chat.updated_human ?? '',
+                            run: () => this.openConversation(chat),
+                        }));
+
+                    const matches = (value) => !query || String(value).toLowerCase().includes(query);
+
+                    const commands = this.commandList()
+                        .filter((command) => matches(command.label) || matches(command.keywords))
+                        .map((command) => ({
+                            id: `command:${command.id}`,
+                            kind: 'command',
+                            label: command.label,
+                            hint: command.hint,
+                            run: command.run,
+                        }));
+
+                    return [...threads, ...commands];
+                },
+
+                commandList() {
+                    const list = [
+                        {
+                            id: 'chat.new',
+                            label: 'Start a new chat',
+                            hint: 'Ctrl+K',
+                            keywords: 'new fresh conversation',
+                            run: () => { window.location.href = this.routes.history; },
+                        },
+                        {
+                            id: 'chat.settings',
+                            label: 'Open settings',
+                            hint: 'Providers and appearance',
+                            keywords: 'provider model api key appearance font text size density motion',
+                            run: () => { this.settingsOpen = true; },
+                        },
+                        {
+                            id: 'chat.sidebar',
+                            label: this.sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar',
+                            hint: '',
+                            keywords: 'rail hide show drawer',
+                            run: () => { this.toggleSidebar(); },
+                        },
+                        {
+                            id: 'chat.layout',
+                            label: this.historyLayout === 'grid' ? 'History as list' : 'History as grid',
+                            hint: '',
+                            keywords: 'layout grid list view tiles sidebar',
+                            run: () => { this.toggleHistoryLayout(); },
+                        },
+                        {
+                            id: 'chat.sidebar-width',
+                            label: 'Reset sidebar width',
+                            hint: `${this.sidebarWidth}px`,
+                            keywords: 'resize reset width',
+                            run: () => { this.resetSidebarWidth(); },
+                        },
+                        {
+                            id: 'chat.preferences',
+                            label: 'Reset appearance preferences',
+                            hint: 'Text size, spacing, motion',
+                            keywords: 'reset font size density motion preferences',
+                            run: () => { this.resetPreferences(); },
+                        },
+                        {
+                            id: 'chat.workspace',
+                            label: 'Open workspace',
+                            hint: 'Code',
+                            keywords: 'ide files editor project',
+                            run: () => { window.location.href = this.routes.workspace; },
+                        },
+                        {
+                            id: 'chat.studio',
+                            label: 'Open studio',
+                            hint: 'Media',
+                            keywords: 'image audio video generate',
+                            run: () => { window.location.href = this.routes.studio; },
+                        },
+                    ];
+
+                    return list;
+                },
+
+                // A destructive action is two steps: describe it, then confirm it. Keeping
+                // them apart means the wording can name what will actually
+                // happen rather than just asking "are you sure?".
+                askConfirm({ title, body, confirmLabel = 'Confirm', danger = false, onConfirm }) {
+                    this.confirmDialog = { title, body, confirmLabel, danger, onConfirm, busy: false };
+                },
+
+                // The dialog closes whatever the outcome, so a caller never has
+                // to remember to dismiss it and a failure cannot strand it open.
+                async runConfirm() {
+                    const dialog = this.confirmDialog;
+
+                    if (!dialog || dialog.busy) {
+                        return;
+                    }
+
+                    dialog.busy = true;
+
+                    try {
+                        await dialog.onConfirm();
+                    } catch (error) {
+                        // The dialog is already closing, so without this the
+                        // action's failure would leave no trace at all.
+                        this.lastError = error?.message ?? String(error);
+                        this.showNotice(this.lastError);
+                    } finally {
+                        this.confirmDialog = null;
+                    }
+                },
+
+                // Renaming used to be window.prompt, which cannot be styled and
+                // blocks the event loop. The row swaps to an input instead.
+                startRename(conversation) {
+                    this.menuFor = null;
+                    this.renamingId = conversation.id;
+                    this.renameDraft = conversation.title;
+
+                    // Queried by id rather than $refs: the field is created by an
+                    // x-if inside an x-for, so it only exists after this tick.
+                    this.$nextTick(() => {
+                        const input = document.getElementById(`rename-${conversation.id}`);
+
+                        input?.focus();
+                        input?.select();
+                    });
+                },
+
+                cancelRename() {
+                    this.renamingId = null;
+                    this.renameDraft = '';
+                },
+
+                async commitRename(conversation) {
+                    const title = this.renameDraft.trim();
+
+                    if (!title || title === conversation.title) {
+                        this.cancelRename();
+
+                        return;
+                    }
+
+                    this.cancelRename();
+
+                    await this.updateConversation(conversation.id, { title });
+                },
+
+                renameProject(project) {
+                    // The same inline field the chats use, rather than a second
+                    // mechanism: window.prompt cannot be styled and blocked the
+                    // whole thread while it was open.
+                    this.menuFor = null;
+                    this.renamingProjectId = project.id;
+                    this.projectRenameDraft = project.name;
+
+                    this.$nextTick(() => {
+                        const input = document.getElementById(`rename-project-${project.id}`);
+
+                        input?.focus();
+                        input?.select();
+                    });
+                },
+
+                cancelProjectRename() {
+                    this.renamingProjectId = null;
+                    this.projectRenameDraft = '';
+                },
+
+                async commitProjectRename(project) {
+                    const name = this.projectRenameDraft.trim();
+
+                    if (!name || name === project.name) {
+                        this.cancelProjectRename();
+
+                        return;
+                    }
+
+                    this.cancelProjectRename();
+
+                    const response = await fetch(`${this.routes.history}/projects/${project.id}`, {
                         method: 'PATCH',
                         headers: { ...this.headers(), 'Content-Type': 'application/json' },
                         body: JSON.stringify({ name, workspace: window.whaleWorkspaceId() }),
                     });
 
-                    this.loadHistory();
+                    // The rename field is already closed by this point, so a
+                    // failure would otherwise leave the old name showing with
+                    // nothing to say the new one was refused.
+                    if (!response.ok) {
+                        this.showNotice('That project could not be renamed.');
+                    }
+
+                    await this.loadHistory();
                 },
 
                 async deleteProject(project) {
-                    if (!window.confirm(`Delete project "${project.name}"? Its chats are kept.`)) {
-                        return;
-                    }
+                    this.askConfirm({
+                        title: `Delete "${project.name}"?`,
+                        body: 'The chats inside it are kept and move back to your history.',
+                        confirmLabel: 'Delete project',
+                        danger: true,
+                        onConfirm: async () => {
+                            const response = await fetch(`${this.routes.history}/projects/${project.id}`, {
+                                method: 'DELETE',
+                                headers: this.headers(),
+                            });
 
-                    await fetch(`${this.routes.history}/projects/${project.id}`, {
-                        method: 'DELETE',
-                        headers: this.headers(),
+                            if (!response.ok) {
+                                throw new Error('That project could not be deleted.');
+                            }
+
+                            await this.loadHistory();
+                        },
                     });
-
-                    this.loadHistory();
-                },
-
-                async renameConversation(conversation) {
-                    const title = window.prompt('Chat title', conversation.title);
-
-                    if (!title || title === conversation.title) {
-                        return;
-                    }
-
-                    await this.updateConversation(conversation.id, { title });
                 },
 
                 async togglePinned(conversation) {
@@ -1119,31 +1968,73 @@
                 },
 
                 async deleteConversation(conversation) {
-                    if (!window.confirm(`Delete "${conversation.title}"?`)) {
-                        return;
-                    }
+                    this.menuFor = null;
 
-                    await fetch(`${this.routes.history}/${conversation.id}`, {
-                        method: 'DELETE',
-                        headers: this.headers(),
+                    this.askConfirm({
+                        title: `Delete "${conversation.title}"?`,
+                        body: 'This removes the chat and every message in it. It cannot be undone.',
+                        confirmLabel: 'Delete chat',
+                        danger: true,
+                        onConfirm: async () => {
+                            const response = await fetch(`${this.routes.history}/${conversation.id}`, {
+                                method: 'DELETE',
+                                headers: this.headers(),
+                            });
+
+                            // Throwing hands the failure to the dialog's own
+                            // handler, which closes it and shows the notice —
+                            // without this the chat simply stayed listed with
+                            // no explanation of why it was still there.
+                            if (!response.ok) {
+                                throw new Error('That chat could not be deleted.');
+                            }
+
+                            if (this.activeConversationId === conversation.id) {
+                                this.activeConversationId = null;
+                                this.messages = [];
+                            }
+
+                            await this.loadHistory();
+                        },
                     });
+                },
+
+                async archiveConversation(conversation) {
+                    this.menuFor = null;
+
+                    await this.updateConversation(conversation.id, { archived: true });
 
                     if (this.activeConversationId === conversation.id) {
                         this.activeConversationId = null;
                         this.messages = [];
                     }
 
-                    this.loadHistory();
+                    await this.loadHistory();
+                },
+
+                async restoreConversation(conversation) {
+                    await this.updateConversation(conversation.id, { archived: false });
+
+                    await this.loadHistory();
                 },
 
                 async updateConversation(id, patch) {
-                    await fetch(`${this.routes.history}/${id}`, {
+                    const response = await fetch(`${this.routes.history}/${id}`, {
                         method: 'PATCH',
                         headers: { ...this.headers(), 'Content-Type': 'application/json' },
                         body: JSON.stringify({ ...patch, workspace: window.whaleWorkspaceId() }),
                     });
 
-                    this.loadHistory();
+                    // Renaming, pinning, archiving and filing into a project all
+                    // arrive through here, and the history is reloaded either way
+                    // so the list reflects what the server actually holds. The
+                    // notice is what tells the two apart: without it a rejected
+                    // change reloaded the old value and the click looked ignored.
+                    if (!response.ok) {
+                        this.showNotice('That change could not be saved.');
+                    }
+
+                    await this.loadHistory();
                 },
 
                 // Dropping a chat onto a project files it there.
@@ -1163,6 +2054,17 @@
                         });
 
                         if (!response.ok) {
+                            // Previously this returned silently, so a chat that
+                            // could not be opened looked identical to one that had
+                            // not been clicked. 403 specifically means the thread
+                            // belongs to another workspace.
+                            const message = response.status === 403
+                                ? 'That chat belongs to a different workspace.'
+                                : 'Could not open that conversation.';
+
+                            this.lastError = message;
+                            this.showNotice(message);
+
                             return;
                         }
 
@@ -1175,6 +2077,7 @@
                         this.$nextTick(() => this.maybeScrollToBottom());
                     } catch (error) {
                         this.lastError = 'Could not open that conversation.';
+                        this.showNotice(this.lastError);
                     }
                 },
 
@@ -1271,6 +2174,7 @@
                         }
                     } catch (error) {
                         this.lastError = error.message;
+                        this.showNotice(this.lastError);
                     } finally {
                         this.enhancing = false;
                     }
@@ -1316,6 +2220,15 @@
                             this.efforts = payload.efforts;
                         }
 
+                        if (Array.isArray(payload?.lengths) && payload.lengths.length) {
+                            this.lengths = payload.lengths;
+
+                            // The server is the source of truth for the tier
+                            // list, so a stored length has to be re-resolved
+                            // against it rather than trusted.
+                            this.syncLengthIndex();
+                        }
+
                         this.mentionCatalog = payload?.mentions ?? [];
 
                         if (Array.isArray(payload?.styles) && payload.styles.length) {
@@ -1355,6 +2268,16 @@
                     if (effort && this.efforts.some((option) => option.id === effort)) {
                         this.thinking = effort;
                     }
+
+                    const length = this.read(LENGTH_STORAGE_KEY);
+
+                    if (length && this.lengths.some((option) => option.id === length)) {
+                        this.length = length;
+                    }
+
+                    // The slider position is derived from the id, never stored
+                    // separately, so the two can never drift apart.
+                    this.syncLengthIndex();
                 },
 
                 formatBytes(bytes) {
@@ -1373,7 +2296,12 @@
 
                 async loadLocalModels() {
                     try {
-                        const response = await fetch(this.routes.localModels, {
+                        // The settings panel is the only place runtime health is
+                        // shown, so the probe is paid here and nowhere else.
+                        const url = new URL(this.routes.localModels, window.location.origin);
+                        url.searchParams.set('health', '1');
+
+                        const response = await fetch(url, {
                             headers: { 'Accept': 'application/json' },
                         });
 
@@ -1385,9 +2313,147 @@
 
                         this.localModels = payload?.models ?? [];
                         this.modelsPath = payload?.path ?? '';
+                        this.unreadableModels = payload?.unreadable ?? [];
+                        this.runtimeHealth = payload?.runtimes ?? {};
                     } catch (error) {
                         // Detection is read-only; failing to list files must never
                         // break the chat itself.
+                    }
+                },
+
+                /**
+                 * The endpoints declared in WHALE_CUSTOM_PROVIDERS, and the models
+                 * kept for each. The API key is deliberately never part of this
+                 * payload; only whether one was set travels.
+                 */
+                async loadCustomProviders() {
+                    try {
+                        const response = await fetch(this.routes.customProviders, {
+                            headers: { 'Accept': 'application/json' },
+                        });
+
+                        if (!response.ok) {
+                            return;
+                        }
+
+                        const payload = await response.json();
+
+                        this.customProviders = payload?.providers ?? [];
+                    } catch (error) {
+                        // Only the settings section depends on this, so an empty
+                        // section is a better outcome than an error.
+                    }
+                },
+
+                customProviderModelsUrl(provider) {
+                    return `${this.routes.customProviders}/${encodeURIComponent(provider)}/models`;
+                },
+
+                customProviderSelectionFor(provider) {
+                    return this.customProviderSelection[provider] ?? [];
+                },
+
+                toggleCustomModel(provider, modelId) {
+                    const chosen = this.customProviderSelectionFor(provider);
+
+                    this.customProviderSelection[provider] = chosen.includes(modelId)
+                        ? chosen.filter((id) => id !== modelId)
+                        : [...chosen, modelId];
+                },
+
+                async discoverCustomModels(provider) {
+                    this.customProviderBusy[provider] = 'discover';
+
+                    try {
+                        const response = await fetch(this.customProviderModelsUrl(provider), {
+                            headers: { 'Accept': 'application/json' },
+                        });
+
+                        const payload = await response.json().catch(() => null);
+
+                        if (!response.ok || !payload) {
+                            throw new Error(`Could not reach ${provider}.`);
+                        }
+
+                        this.customProviderDiscovered[provider] = payload.models ?? [];
+
+                        // A reachable=false result means the endpoint could not be
+                        // asked, which is different from an endpoint that serves
+                        // nothing, so it is surfaced rather than shown as empty.
+                        if (payload.reachable === false) {
+                            this.showNotice(payload.message ?? `Could not reach ${provider}.`);
+                        }
+                    } catch (error) {
+                        this.showNotice(error.message);
+                    } finally {
+                        this.customProviderBusy[provider] = null;
+                    }
+                },
+
+                async importCustomModels(provider) {
+                    const chosen = this.customProviderSelectionFor(provider);
+
+                    if (chosen.length === 0) {
+                        return;
+                    }
+
+                    this.customProviderBusy[provider] = 'import';
+
+                    try {
+                        const response = await fetch(
+                            `${this.routes.customProviders}/${encodeURIComponent(provider)}/import`,
+                            {
+                                method: 'POST',
+                                headers: { ...this.headers(), 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ models: chosen }),
+                            },
+                        );
+
+                        const payload = await response.json().catch(() => null);
+
+                        if (!response.ok || !payload) {
+                            throw new Error(`Could not import from ${provider}.`);
+                        }
+
+                        this.customProviderSelection[provider] = [];
+
+                        await this.loadCustomProviders();
+
+                        this.showNotice(`Kept ${payload.imported.length} model(s) from ${provider}.`);
+                    } catch (error) {
+                        this.showNotice(error.message);
+                    } finally {
+                        this.customProviderBusy[provider] = null;
+                    }
+                },
+
+                async syncCustomModels(provider) {
+                    this.customProviderBusy[provider] = 'sync';
+
+                    try {
+                        const response = await fetch(
+                            `${this.routes.customProviders}/${encodeURIComponent(provider)}/sync`,
+                            {
+                                method: 'POST',
+                                headers: { ...this.headers(), 'Accept': 'application/json' },
+                            },
+                        );
+
+                        const payload = await response.json().catch(() => null);
+
+                        if (!response.ok || !payload) {
+                            throw new Error(`Could not sync ${provider}.`);
+                        }
+
+                        await this.loadCustomProviders();
+
+                        this.showNotice(payload.unreachable
+                            ? `Could not reach ${provider}, so its models were left alone.`
+                            : `Synced ${provider}: ${payload.added.length} added, ${payload.removed.length} removed.`);
+                    } catch (error) {
+                        this.showNotice(error.message);
+                    } finally {
+                        this.customProviderBusy[provider] = null;
                     }
                 },
 
@@ -1439,6 +2505,58 @@
                     this.modelName = fallback?.model ?? null;
                 },
 
+                /**
+                 * What the composer shows while it is empty.
+                 *
+                 * The starter prompts rotate here rather than sitting as
+                 * buttons under the greeting, so the hint is where typing
+                 * starts and there is nothing extra to click past. Anything
+                 * typed takes precedence: the rotation never runs while a
+                 * draft exists, and it never restores the plain hint over a
+                 * prompt the user has actually started.
+                 */
+                get placeholder() {
+                    if (this.mode === 'image') {
+                        return 'Describe the image to generate...';
+                    }
+
+                    if (this.draft.trim()) {
+                        return '';
+                    }
+
+                    return STARTER_PROMPTS[this.starterPromptIndex] ?? '';
+                },
+
+                /**
+                 * Advance the hint, unless there is a draft to leave alone.
+                 */
+                rotateStarterPrompt() {
+                    if (this.draft.trim()) {
+                        return;
+                    }
+
+                    this.starterPromptIndex =
+                        (this.starterPromptIndex + 1) % STARTER_PROMPTS.length;
+                },
+
+                startStarterPrompts() {
+                    this.stopStarterPrompts();
+
+                    // Plain text swapping, so nothing here animates and
+                    // reduced-motion preferences are satisfied by default.
+                    this.starterPromptTimer = setInterval(
+                        () => this.rotateStarterPrompt(),
+                        STARTER_PROMPT_INTERVAL
+                    );
+                },
+
+                stopStarterPrompts() {
+                    if (this.starterPromptTimer) {
+                        clearInterval(this.starterPromptTimer);
+                        this.starterPromptTimer = null;
+                    }
+                },
+
                 get announcement() {
                     switch (this.status) {
                         case 'thinking':
@@ -1454,18 +2572,178 @@
                     }
                 },
 
+                // The timer is cleared before every new notice and on dismissal,
+                // so two failures in a row cannot leave a stale countdown that
+                // hides the newer message early.
+                showNotice(message) {
+                    clearTimeout(this.noticeTimer);
+                    this.notice = message;
+                    this.noticeTimer = setTimeout(() => this.dismissNotice(), 8000);
+                },
+
+                dismissNotice() {
+                    clearTimeout(this.noticeTimer);
+                    this.noticeTimer = null;
+                    this.notice = null;
+                },
+
+                // --- Modal focus handling ---------------------------------
+                // aria-modal tells assistive technology that the rest of the page
+                // is inert, but it does nothing for a real keyboard: without this,
+                // Tab keeps walking through the background while the dialog is
+                // open. Alpine's Focus plugin is not loaded here, so the trap is
+                // written out rather than pulling in another CDN script.
+                trapping: null,
+                returnFocusTo: null,
+
+                trapFocusIn(dialog) {
+                    if (!dialog || this.trapping === dialog) {
+                        return;
+                    }
+
+                    // Held across the release below: a caller that already
+                    // recorded the trigger (openPalette does, because it knows
+                    // the caret it is taking focus from) wins over whatever
+                    // happens to be focused by the time the effect runs.
+                    const trigger = this.returnFocusTo;
+
+                    this.releaseFocus();
+                    this.trapping = dialog;
+
+                    // Captured before focus moves, so closing restores the button
+                    // or caret that opened the dialog rather than dropping the
+                    // user at the top of the document.
+                    this.returnFocusTo = trigger ?? document.activeElement;
+
+                    const initial = dialog.querySelector(
+                        '[autofocus], input:not([type="hidden"]), textarea, select, button, a[href], [tabindex]:not([tabindex="-1"])',
+                    );
+
+                    this.$nextTick(() => initial?.focus({ preventScroll: true }));
+                },
+
+                releaseFocus() {
+                    if (!this.trapping) {
+                        return;
+                    }
+
+                    this.trapping = null;
+
+                    const target = this.returnFocusTo;
+                    this.returnFocusTo = null;
+
+                    if (target && document.contains(target)) {
+                        target.focus({ preventScroll: true });
+                    }
+                },
+
+                // Tab is handled at the edges only: anything in the middle of the
+                // dialog is left to the browser, which already orders it correctly.
+                keepFocusInside(event) {
+                    if (event.key !== 'Tab' || !this.trapping) {
+                        return;
+                    }
+
+                    const scope = this.trapping;
+                    const focusable = [...scope.querySelectorAll(
+                        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+                    )].filter((element) => element.offsetParent !== null || element === document.activeElement);
+
+                    if (!focusable.length) {
+                        event.preventDefault();
+
+                        return;
+                    }
+
+                    const first = focusable[0];
+                    const last = focusable[focusable.length - 1];
+                    const active = document.activeElement;
+                    const outside = !scope.contains(active);
+
+                    if (event.shiftKey && (active === first || outside)) {
+                        event.preventDefault();
+                        last.focus();
+                    } else if (!event.shiftKey && (active === last || outside)) {
+                        event.preventDefault();
+                        first.focus();
+                    }
+                },
+
                 init() {
                     this.loadCatalog();
                     this.loadCapabilities();
                     this.loadHistory();
                     this.loadMentions();
                     this.applyStoredDepth();
+                    this.applyStoredSidebar();
+                    this.applyPreferences();
+
+                    // Live capture hands its transcript over on the window, so
+                    // this side never has to know the panel exists.
+                    //
+                    // The old handler is dropped first because init() can run
+                    // twice (x-init plus Alpine's own lifecycle hook), and a
+                    // second registration would fire the transcript in twice.
+                    if (this.onLiveTranscript) {
+                        window.removeEventListener('live-transcript', this.onLiveTranscript);
+                    }
+
+                    this.onLiveTranscript = (event) => this.applyLiveTranscript(event);
+                    window.addEventListener('live-transcript', this.onLiveTranscript);
+
+                    this.startStarterPrompts();
 
                     this.$nextTick(() => this.maybeScrollToBottom());
                 },
 
+                /**
+                 * Take a transcript from live capture and put it in the draft.
+                 *
+                 * Focus lands in the composer because that is where the user
+                 * wants to be afterwards: the words are in the box, and the
+                 * next move is reading them, editing them, or typing on.
+                 */
+                applyLiveTranscript(event) {
+                    const text = (event.detail?.text ?? '').trim();
+
+                    if (!text) {
+                        return;
+                    }
+
+                    // Appended, never replaced: a half-written draft has to
+                    // survive a detour through the microphone.
+                    this.draft = this.draft.trim()
+                        ? `${this.draft.trim()} ${text}`
+                        : text;
+
+                    this.$nextTick(() => {
+                        const input = this.$refs.input;
+
+                        if (!input) {
+                            return;
+                        }
+
+                        this.autoGrow({ target: input });
+                        input.focus();
+
+                        // Caret to the end, where the next thing gets typed.
+                        const end = input.value.length;
+                        input.setSelectionRange(end, end);
+                    });
+                },
+
+                // Escape closes the sidebar on a phone, matching the drawer
+                // behaviour rather than the desktop rail's.
+                onSidebarKeydown(event) {
+                    if (event.key === 'Escape' && this.mobileSidebar) {
+                        this.mobileSidebar = false;
+                    }
+                },
+
                 destroy() {
                     this.abortController?.abort();
+                    this.stopStarterPrompts();
+                    window.removeEventListener('live-transcript', this.onLiveTranscript);
                 },
 
                 onScroll() {
@@ -2562,6 +3840,7 @@
                             mode: this.mode,
                             depth: this.depth,
                             thinking: this.thinking,
+                            length: this.length,
                             web: this.web ? 1 : 0,
                             deep_search: this.deepSearch ? 1 : 0,
                             mentions: this.mentionedAgents(text),
@@ -2574,6 +3853,7 @@
                         body.append('mode', this.mode);
                         body.append('depth', this.depth);
                         body.append('thinking', this.thinking);
+                        body.append('length', this.length);
                         body.append('web', this.web ? '1' : '0');
                         body.append('deep_search', this.deepSearch ? '1' : '0');
                         body.append('workspace', window.whaleWorkspaceId());

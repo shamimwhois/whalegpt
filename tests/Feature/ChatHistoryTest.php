@@ -1,6 +1,6 @@
 <?php
 
-use App\Ai\Agents\ChatAgent;
+use App\Ai\Agents\AssistantAgent;
 use Illuminate\Http\UploadedFile;
 use Laravel\Ai\Prompts\AgentPrompt;
 
@@ -17,7 +17,7 @@ function replayedHistory(AgentPrompt $prompt): array
 }
 
 test('prior turns are replayed to the agent as conversation history', function () {
-    ChatAgent::fake(['Queues run jobs in the background.']);
+    AssistantAgent::fake(['Queues run jobs in the background.']);
 
     $this->post(route('chat.send'), [
         'message' => 'And how do they scale?',
@@ -29,14 +29,14 @@ test('prior turns are replayed to the agent as conversation history', function (
         ->assertOk()
         ->streamedContent();
 
-    ChatAgent::assertPrompted(fn (AgentPrompt $prompt): bool => replayedHistory($prompt) === [
+    AssistantAgent::assertPrompted(fn (AgentPrompt $prompt): bool => replayedHistory($prompt) === [
         ['user', 'Explain queues.'],
         ['assistant', 'They run jobs asynchronously.'],
     ]);
 });
 
 test('history roles are limited to user and assistant', function () {
-    ChatAgent::fake()->preventStrayPrompts();
+    AssistantAgent::fake()->preventStrayPrompts();
 
     $this->postJson(route('chat.send'), [
         'message' => 'Hello',
@@ -47,11 +47,11 @@ test('history roles are limited to user and assistant', function () {
         ->assertUnprocessable()
         ->assertJsonValidationErrors('history.0.role');
 
-    ChatAgent::assertNeverPrompted();
+    AssistantAgent::assertNeverPrompted();
 });
 
 test('history is limited to forty turns', function () {
-    ChatAgent::fake()->preventStrayPrompts();
+    AssistantAgent::fake()->preventStrayPrompts();
 
     $history = collect(range(1, 41))
         ->map(fn (int $turn): array => ['role' => 'user', 'content' => "Turn {$turn}"])
@@ -64,11 +64,11 @@ test('history is limited to forty turns', function () {
         ->assertUnprocessable()
         ->assertJsonValidationErrors('history');
 
-    ChatAgent::assertNeverPrompted();
+    AssistantAgent::assertNeverPrompted();
 });
 
 test('attachments may be sent without a message', function () {
-    ChatAgent::fake(['There is a document on the desk.']);
+    AssistantAgent::fake(['There is a document on the desk.']);
 
     $this->post(route('chat.send'), [
         'attachments' => [fakeImageUpload('desk.png')],
@@ -76,12 +76,12 @@ test('attachments may be sent without a message', function () {
         ->assertOk()
         ->streamedContent();
 
-    ChatAgent::assertPrompted(fn (AgentPrompt $prompt): bool => str_contains($prompt->prompt, 'Describe the attached files')
+    AssistantAgent::assertPrompted(fn (AgentPrompt $prompt): bool => str_contains($prompt->prompt, 'Describe the attached files')
         && $prompt->attachments->count() === 1);
 });
 
 test('attachments are limited to the accepted media types', function () {
-    ChatAgent::fake()->preventStrayPrompts();
+    AssistantAgent::fake()->preventStrayPrompts();
 
     $this->postJson(route('chat.send'), [
         'message' => 'Read this.',
@@ -90,5 +90,5 @@ test('attachments are limited to the accepted media types', function () {
         ->assertUnprocessable()
         ->assertJsonValidationErrors('attachments.0');
 
-    ChatAgent::assertNeverPrompted();
+    AssistantAgent::assertNeverPrompted();
 });

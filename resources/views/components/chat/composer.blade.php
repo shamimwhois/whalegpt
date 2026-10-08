@@ -9,6 +9,8 @@
 <div class="shrink-0 bg-white px-4 pb-4 pt-3 dark:bg-[#212121] sm:px-6 lg:px-8">
     <div class="mx-auto max-w-3xl">
 
+        
+
         {{-- Image mode turns the composer into a styled generation box. --}}
         <div x-show="mode === 'image'" class="mb-2" style="display:none">
             <x-chat.style-chips />
@@ -227,102 +229,104 @@
                     Deep search
                 </button>
 
-                {{-- Thinking effort --}}
+                {{-- Thinking effort: how much the model deliberates before answering. --}}
                 <div class="relative shrink-0">
                     <button
                         type="button"
                         x-on:click="effortOpen = !effortOpen"
-                        x-on:click.outside="effortOpen = false"
                         :aria-expanded="effortOpen ? 'true' : 'false'"
-                        class="flex items-center gap-1 rounded-full border border-black/[0.08] px-2.5 py-1
-                               text-[11px] font-medium text-[#5d5d5d] transition hover:bg-black/[0.05]
-                               focus-visible:outline-2 focus-visible:outline-accent dark:border-white/[0.14]
-                               dark:text-[#b4b4b4] dark:hover:bg-white/[0.08]"
+                        class="whale-chip"
                         title="How hard the model should think"
                     >
-                        <svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path stroke-linecap="round" stroke-linejoin="round"
-                                  d="M12 18v-5.25m0 0 6-2.25m-6 2.25-6-2.25M12 6.75V11.25"/>
-                        </svg>
+                        <x-ui.icon name="bolt" class="h-3 w-3" />
                         <span x-text="effortLabel()"></span>
                     </button>
 
-                    <div
-                        x-show="effortOpen"
-                        x-transition:enter="transition ease-out duration-150"
-                        x-transition:enter-start="opacity-0 translate-y-1"
-                        x-transition:enter-end="opacity-100 translate-y-0"
-                        class="absolute bottom-full left-0 z-30 mb-2 w-60 overflow-hidden rounded-xl
-                               border border-black/[0.08] bg-white p-1 shadow-xl
-                               dark:border-white/[0.14] dark:bg-[#303030]"
-                        style="display:none"
-                    >
+                    <x-ui.panel show="effortOpen" side="top" width="w-60" label="Thinking effort">
                         <template x-for="option in efforts" :key="option.id">
-                            <button
-                                type="button"
+                            <x-ui.menu-item
+                                active="thinking === option.id"
                                 x-on:click="setEffort(option.id); effortOpen = false"
-                                class="flex w-full flex-col gap-0.5 rounded-lg px-3 py-2 text-left transition
-                                       hover:bg-black/[0.05] focus-visible:outline-2 focus-visible:outline-accent
-                                       dark:hover:bg-white/[0.08]"
                             >
-                                <span class="flex items-center gap-2 text-sm font-medium">
-                                    <span x-text="option.label"></span>
-                                    <svg x-show="thinking === option.id" class="h-3.5 w-3.5 text-accent"
-                                         viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                                        <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5"/>
-                                    </svg>
-                                </span>
-                                <span class="text-[11px] leading-snug text-[#8f8f8f]" x-text="option.description"></span>
-                            </button>
+                                <span class="block truncate" x-text="option.label"></span>
+                                <span class="mt-0.5 block text-[11px] leading-snug text-muted" x-text="option.description"></span>
+                            </x-ui.menu-item>
                         </template>
-                    </div>
+                    </x-ui.panel>
                 </div>
 
-                {{-- Response depth --}}
+                {{-- Response depth: how thorough the reply should be. --}}
                 <div class="relative shrink-0">
                     <button
                         type="button"
                         x-on:click="depthOpen = !depthOpen"
-                        x-on:click.outside="depthOpen = false"
                         :aria-expanded="depthOpen ? 'true' : 'false'"
-                        class="flex items-center gap-1 rounded-full border border-black/[0.08] px-2.5 py-1
-                               text-[11px] font-medium text-[#5d5d5d] transition hover:bg-black/[0.05]
-                               focus-visible:outline-2 focus-visible:outline-accent dark:border-white/[0.14]
-                               dark:text-[#b4b4b4] dark:hover:bg-white/[0.08]"
+                        class="whale-chip"
                         title="How thorough the answer should be"
                     >
                         <span x-text="depthLabel()"></span>
                     </button>
 
-                    <div
-                        x-show="depthOpen"
-                        x-transition:enter="transition ease-out duration-150"
-                        x-transition:enter-start="opacity-0 translate-y-1"
-                        x-transition:enter-end="opacity-100 translate-y-0"
-                        class="absolute bottom-full left-0 z-30 mb-2 w-64 overflow-hidden rounded-xl
-                               border border-black/[0.08] bg-white p-1 shadow-xl
-                               dark:border-white/[0.14] dark:bg-[#303030]"
-                        style="display:none"
-                    >
+                    <x-ui.panel show="depthOpen" side="top" width="w-64" label="Response depth">
                         <template x-for="option in depths" :key="option.id">
-                            <button
-                                type="button"
+                            <x-ui.menu-item
+                                active="depth === option.id"
                                 x-on:click="setDepth(option.id); depthOpen = false"
-                                class="flex w-full flex-col gap-0.5 rounded-lg px-3 py-2 text-left transition
-                                       hover:bg-black/[0.05] focus-visible:outline-2 focus-visible:outline-accent
-                                       dark:hover:bg-white/[0.08]"
                             >
-                                <span class="flex items-center gap-2 text-sm font-medium">
-                                    <span x-text="option.label"></span>
-                                    <svg x-show="depth === option.id" class="h-3.5 w-3.5 text-accent"
-                                         viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                                        <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5"/>
-                                    </svg>
-                                </span>
-                                <span class="text-[11px] leading-snug text-[#8f8f8f]" x-text="option.description"></span>
-                            </button>
+                                <span class="block truncate" x-text="option.label"></span>
+                                <span class="mt-0.5 block text-[11px] leading-snug text-muted" x-text="option.description"></span>
+                            </x-ui.menu-item>
                         </template>
-                    </div>
+                    </x-ui.panel>
+                </div>
+
+                {{-- Response length: how much the model is allowed to write.
+
+                     A slider rather than a fourth dropdown, because length is
+                     the one response-shaping setting where the middle ground is
+                     genuinely useful and picking it by name means scrolling a
+                     list. The tier is named underneath so the position is never
+                     the only clue. --}}
+                <div class="relative shrink-0">
+                    <button
+                        type="button"
+                        x-on:click="lengthOpen = !lengthOpen"
+                        :aria-expanded="lengthOpen ? 'true' : 'false'"
+                        class="whale-chip"
+                        title="How long the answer should be"
+                    >
+                        <x-ui.icon name="rows" class="h-3 w-3" />
+                        <span x-text="lengthLabel()"></span>
+                    </button>
+
+                    <x-ui.panel show="lengthOpen" side="top" width="w-72" label="Response length">
+                        <div class="px-2.5 py-2">
+                            <div class="mb-2 flex items-baseline justify-between gap-3">
+                                <span class="text-sm font-medium" x-text="lengthLabel()"></span>
+                                <span class="text-[11px] text-muted" x-text="lengthIndex + 1 + ' of ' + lengths.length"></span>
+                            </div>
+
+                            <input
+                                type="range"
+                                class="whale-range"
+                                min="0"
+                                :max="lengths.length - 1"
+                                step="1"
+                                :value="lengthIndex"
+                                x-on:input="setLengthIndex($event.target.value)"
+                                x-on:change="lengthOpen = false"
+                                aria-label="Response length"
+                            >
+
+                            <div class="mt-1.5 flex justify-between text-[10px] text-faint">
+                                <template x-for="option in lengths" :key="option.id">
+                                    <span x-text="option.label"></span>
+                                </template>
+                            </div>
+
+                            <p class="mt-2 text-[11px] leading-snug text-muted" x-text="lengthDescription()"></p>
+                        </div>
+                    </x-ui.panel>
                 </div>
             </div>
 
@@ -376,9 +380,8 @@
                 x-on:keydown.tab.prevent="acceptSuggestion()"
                 rows="1"
                 maxlength="20000"
-                :placeholder="mode === 'image'
-                    ? 'Describe the image to generate...'
-                    : 'Message Whale AI — type / for commands, @ to mention a file'"
+                :placeholder="placeholder"
+
                 class="min-h-[44px] max-h-[45vh] w-full resize-none border-0 bg-transparent px-3 py-2
                        text-[15px] leading-6 placeholder:text-[#8f8f8f]
                        focus:outline-none focus:ring-0 sm:max-h-[45vh]"
@@ -515,6 +518,11 @@
                           x-show="draft.length > 16000" style="display:none">
                         <span x-text="draft.length"></span>/20000
                     </span>
+
+                    {{-- The microphone sits with the other composer controls,
+                         just before send: it fills this box, so it belongs with
+                         the box rather than floating over the page. --}}
+                    <x-chat.live-capture />
 
                     <button
                         type="button"

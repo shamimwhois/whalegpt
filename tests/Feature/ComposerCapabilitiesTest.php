@@ -6,9 +6,12 @@ use App\Ai\ThinkingEffort;
 test('the capability endpoint lists every mode and depth the server accepts', function () {
     $payload = $this->getJson(route('chat.capabilities'))->assertOk()->json();
 
-    expect($payload['modes'])->toHaveCount(7)
+    expect($payload['modes'])->toHaveCount(12)
         ->and(array_column($payload['modes'], 'id'))
-        ->toBe(['chat', 'code', 'research', 'deep-search', 'study', 'security', 'art']);
+        ->toBe([
+            'ask', 'plan', 'agent', 'debug', 'orchestrate',
+            'chat', 'code', 'research', 'deep-search', 'study', 'security', 'art',
+        ]);
 
     expect(array_column($payload['depths'], 'id'))
         ->toBe(['deep', 'fast', 'super']);
@@ -101,13 +104,30 @@ test('the model catalog tags every model with a selectable type', function () {
     foreach ($payload['providers'] as $provider) {
         foreach ($provider['models'] as $model) {
             expect($model)->toHaveKeys(['type', 'reasoning'])
-                ->and($model['type'])->toBeIn(['fast', 'reasoning']);
+                ->and($model['type'])->toBeIn(['fast', 'reasoning', 'image', 'video', 'audio']);
 
             $types[] = $model['type'];
         }
     }
 
     expect($types)->not->toBeEmpty();
+});
+
+test('media models are tagged so the chat picker can keep them out', function () {
+    $payload = $this->getJson(route('chat.models'))->assertOk()->json();
+
+    $media = collect($payload['providers'])
+        ->flatMap(fn (array $provider): array => $provider['models'])
+        ->filter(fn (array $model): bool => ($model['media'] ?? false) === true);
+
+    // The flag is the contract the picker's media filter and the chat guard
+    // both read, so it has to be present even when nothing in the directory
+    // happens to be a media model right now.
+    expect($payload['providers'][0]['models'][0])->toHaveKey('media');
+
+    foreach ($media as $model) {
+        expect($model['capabilities'])->not->toContain('text');
+    }
 });
 
 test('the search toggles must be booleans', function () {

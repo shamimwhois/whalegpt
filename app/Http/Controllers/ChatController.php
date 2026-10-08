@@ -3,7 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Ai\Agents\ArtAgent;
-use App\Ai\Agents\ChatAgent;
+use App\Ai\Agents\AssistantAgent;
 use App\Ai\Agents\CodingAgent;
 use App\Ai\Agents\DeepSearchAgent;
 use App\Ai\Agents\EthicalHackingAgent;
@@ -11,7 +11,11 @@ use App\Ai\Agents\ResearchAgent;
 use App\Ai\Agents\StudyAgent;
 use App\Ai\ImageStyle;
 use App\Ai\ModelCatalog;
+use App\Ai\Models\LocalModel;
+use App\Ai\Models\LocalModelRegistry;
+use App\Ai\Models\ModelRunner;
 use App\Ai\ResponseDepth;
+use App\Ai\ResponseLength;
 use App\Ai\ThinkingEffort;
 use App\Ai\Tools\DeleteFileTool;
 use App\Ai\Tools\ListFilesTool;
@@ -26,17 +30,23 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Laravel\Ai\Messages\Message;
+use RuntimeException;
 use Symfony\Component\HttpFoundation\Response;
+use Throwable;
 
 class ChatController extends Controller
 {
-    public function __construct(private readonly ModelCatalog $catalog) {}
+    public function __construct(
+        private readonly ModelCatalog $catalog,
+        private readonly LocalModelRegistry $registry,
+        private readonly ModelRunner $runner,
+    ) {}
 
     /**
      * The assistant roles a request may select.
      */
-    private const MODES = ['chat', 'code', 'research', 'study', 'art', 'deep-search', 'security'];
 
     /**
      * The longest prompt the composer will accept.
@@ -81,13 +91,36 @@ class ChatController extends Controller
      *
      * Detection is read-only and happens once per request; the underlying
      * registry caches each file's parsed header against its size and mtime.
+     *
+     * Runtime health costs a network probe, so it is opt-in with ?health=1.
+     * The settings view asks for it when it opens, and a plain list of files
+     * does not pay three seconds of connection timeouts for a status nobody
+     * looked at.
      */
-    public function localModels(LocalModelRegistry $registry): JsonResponse
+    public function localModels(Request $request, LocalModelRegistry $registry, ModelRunner $runner): JsonResponse
     {
-        return response()->json([
+        $payload = [
             'path' => $registry->path(),
             'models' => $registry->toArray(),
-        ]);
+            'unreadable' => $registry->unreadable(),
+        ];
+
+        if ($request->boolean('health')) {
+            // Only the runtimes the detected files would actually use are
+            // probed. A diffusers URL matters when an image checkpoint is in
+            // the directory and not otherwise, and each probe can cost its
+            // full timeout waiting on a server that is not running.
+            $payload['runtimes'] = $runner->healthFor(
+                collect($registry->models())
+                    ->map(fn (LocalModel $model): string => $model->runtime()['name'])
+                    ->reject(fn (string $name): bool => $name === 'none')
+                    ->unique()
+                    ->values()
+                    ->all()
+            );
+        }
+
+        return response()->json($payload);
     }
 
     /**
@@ -102,6 +135,7 @@ class ChatController extends Controller
             'modes' => self::modeCatalog(),
             'depths' => ResponseDepth::toArray(),
             'efforts' => ThinkingEffort::toArray(),
+            'lengths' => ResponseLength::toArray(),
             'styles' => ImageStyle::toArray(),
             'mentions' => $this->mentionCatalog(),
         ]);
@@ -118,9 +152,10 @@ class ChatController extends Controller
             'attachments.*' => ['file', 'mimes:jpg,jpeg,png,gif,webp,mp4,webm,qt,mov', 'max:25600'],
             'provider' => ['sometimes', 'nullable', 'string', 'max:64'],
             'model' => ['sometimes', 'nullable', 'string', 'max:128'],
-            'mode' => ['sometimes', 'nullable', Rule::in(self::MODES)],
+            'mode' => ['sometimes', 'nullable', Rule::in(parent::MODES)],
             'depth' => ['sometimes', 'nullable', Rule::in(array_column(ResponseDepth::toArray(), 'id'))],
             'thinking' => ['sometimes', 'nullable', Rule::in(array_column(ThinkingEffort::toArray(), 'id'))],
+            'length' => ['sometimes', 'nullable', Rule::in(array_column(ResponseLength::toArray(), 'id'))],
             'web' => ['sometimes', 'boolean'],
             'deep_search' => ['sometimes', 'boolean'],
             'mentions' => ['sometimes', 'array', 'max:10'],
@@ -132,6 +167,12 @@ class ChatController extends Controller
             $validated['provider'] ?? null,
             $validated['model'] ?? null,
         );
+
+        // A chat message needs a text model. The picker only offers text models,
+        // but a stored selection can outlive a model swap in the directory, and
+        // sending a prompt to an image checkpoint returns an empty stream that
+        // reads as a broken runtime.
+        $this->ensureModelAnswersText($selection);
 
         /** @var array<int, UploadedFile> $attachments */
         $attachments = collect($request->file('attachments') ?? [])
@@ -163,6 +204,7 @@ class ChatController extends Controller
         $mode = $validated['mode'] ?? 'chat';
         $depth = ResponseDepth::fromRequest($validated['depth'] ?? null);
         $effort = ThinkingEffort::fromRequest($validated['thinking'] ?? null);
+        $length = ResponseLength::fromRequest($validated['length'] ?? null);
         $web = (bool) filter_var($validated['web'] ?? false, FILTER_VALIDATE_BOOL);
         $deepSearch = (bool) filter_var($validated['deep_search'] ?? false, FILTER_VALIDATE_BOOL);
 
@@ -176,14 +218,24 @@ class ChatController extends Controller
 
         $workspace = WorkspaceContext::for($request);
 
-        $agent = new ChatAgent(
+        $agent = new AssistantAgent(
+            $workspace,
             instructions: $this->instructions($mode, $depth, $effort, $searchEnabled, $deepSearchEnabled, $validated['mentions'] ?? []),
             messages: $history,
             tools: $this->tools($mode, $workspace, $web || $searchEnabled, $deepSearch || $deepSearchEnabled),
             depth: $depth,
             effort: $effort,
+            length: $length,
             model: $selection['model'],
         );
+
+        // Local model files are served by a runtime on this machine, not by the
+        // AI SDK, so they take a different path through the same endpoint. The
+        // SDK has no driver for "a .gguf sitting in a directory", and handing it
+        // one produced an empty reply rather than an error.
+        if ($selection['provider'] === ModelCatalog::LOCAL_PROVIDER && filled($selection['model'])) {
+            return $this->sendLocal($text, $history, $selection['model'], $request);
+        }
 
         // The depth tunes step budget, sampling and reasoning effort for the
         // driver that ends up serving the request.
@@ -206,6 +258,99 @@ class ChatController extends Controller
     }
 
     /**
+     * Emit a Vercel-protocol Server-Sent Events stream.
+     *
+     * Headers match the SDK's own streaming response, including the buffering
+     * hint: without it nginx holds the body until the runtime finishes, so the
+     * reply appears all at once instead of arriving as it is generated.
+     *
+     * The callback is only invoked once the response has begun sending, so it
+     * is safe to do work (including blocking HTTP) inside it.
+     */
+    private function streamResponse(Request $request, callable $producer): Response
+    {
+        $response = response()->stream(function () use ($producer): void {
+            $emit = function (string $type, array $data = []): void {
+                echo 'data: '.json_encode(['type' => $type, ...$data])."\n\n";
+                flush();
+            };
+
+            try {
+                $producer($emit);
+            } catch (Throwable $e) {
+                // A runtime that dies mid-stream must still close the protocol,
+                // or the browser waits forever for a terminal event that the
+                // failure already made impossible.
+                $emit('error', ['message' => $e->getMessage()]);
+            }
+
+            $emit('finish');
+        }, 200, [
+            'Content-Type' => 'text/event-stream',
+            'Cache-Control' => 'no-cache',
+            'X-Accel-Buffering' => 'no',
+        ]);
+
+        $response->headers->set('X-Accel-Buffering', 'no');
+
+        return $response;
+    }
+
+    /**
+     * Report a local-runtime failure in the same protocol the success path uses.
+     *
+     * A 500 with a plain JSON body would reach the composer as an unparseable
+     * stream, so the message is delivered as an error event inside a
+     * well-formed 200 stream instead.
+     */
+    private function streamError(Request $request, string $message): Response
+    {
+        return $this->streamResponse($request, function (callable $emit) use ($message): void {
+            $emit('error', ['message' => $message]);
+        });
+    }
+
+    /**
+     * Stream a reply from a local model file through its runtime.
+     *
+     * The response body uses the same Server-Sent Events shape the Vercel data
+     * protocol produces, so the browser's existing stream handler cannot tell
+     * the difference between a hosted provider and a model running on this
+     * machine. Emitting anything else would leave the composer waiting on a
+     * terminal event that never arrives.
+     *
+     * @param  list<Message>  $history
+     */
+    private function sendLocal(string $text, array $history, string $model, Request $request): Response
+    {
+        $messages = collect($history)
+            ->map(fn (Message $message): array => [
+                'role' => $message->role,
+                'content' => $message->content,
+            ])
+            ->push(['role' => 'user', 'content' => $text])
+            ->values()
+            ->all();
+
+        set_time_limit(0);
+
+        try {
+            $deltas = $this->runner->streamLocal($this->registry, $model, $messages, [
+                'temperature' => 0.7,
+                'timeout' => 300,
+            ]);
+        } catch (RuntimeException $e) {
+            return $this->streamError($request, $e->getMessage());
+        }
+
+        return $this->streamResponse($request, function (callable $emit) use ($deltas): void {
+            foreach ($deltas as $delta) {
+                $emit('text-delta', ['delta' => $delta]);
+            }
+        });
+    }
+
+    /**
      * The system prompt for a chat mode.
      *
      * "chat" stays lean so ordinary conversation does not pay for a tool
@@ -223,6 +368,11 @@ class ChatController extends Controller
         array $mentions = [],
     ): string {
         $role = match ($mode) {
+            'ask' => 'You are Whale AI, answering a question. Read the workspace if it helps, but change nothing: you have no tools that can write. Answer directly and skip any preamble.',
+            'plan' => 'You are Whale AI, planning an implementation. Investigate the workspace as much as you need, then produce a plan and stop. Your tools cannot write, so a plan is the whole deliverable. Cover the files to change, the steps in order, the risks and how to verify the result. Do not write the code.',
+            'agent' => 'You are Whale AI, a coding agent. You can create, read, edit and delete files in the user\'s sandboxed workspace. Delegate the implementation to the coding_agent sub-agent with a complete, self-contained brief — it cannot see this conversation. Write the code, then say what changed and how to check it.',
+            'orchestrate' => 'You are Whale AI, orchestrating a full piece of work end to end. Plan first, then implement by delegating to the coding_agent sub-agent with a self-contained brief, then verify: re-read what changed, and run the project\'s test suite or linter through the workspace tools. If a check fails, diagnose the cause and fix it before reporting. Report the plan you followed, the files changed and the result of each check.',
+            'debug' => 'You are Whale AI, diagnosing a fault. Investigate only — your tools cannot change files. Reproduce the symptom from the code and the error text, form the most likely explanations, and rank them by evidence rather than guessing. Name the specific file and line you would change and why, but leave the edit to the user.',
             'code' => 'You are Whale AI, a coding assistant. You can create, read, edit and delete files in the user\'s sandboxed workspace. When a task involves writing or changing files, delegate to the coding_agent sub-agent with a complete, self-contained brief — it cannot see this conversation. Keep your own replies short and summarise what changed.',
             'research' => 'You are Whale AI, a research assistant. Use the research_agent sub-agent for a focused lookup, or the deep_search_agent sub-agent when the question needs several searches and cross-checking. Cite the sources returned. Keep the final answer concise and well-linked.',
             'deep-search' => 'You are Whale AI, an advanced research assistant. Prefer the deep_search_agent sub-agent: it plans several queries, fetches pages and reconciles conflicting sources. Give it the question and the constraints in a self-contained brief, then present its findings with the citations it returns.',
@@ -295,17 +445,18 @@ class ChatController extends Controller
             return [];
         }
 
-        $tools = [
-            new ListFilesTool($workspace),
-            new ReadFileTool($workspace),
-            new SearchFilesTool($workspace),
-            new WriteFileTool($workspace),
-            new DeleteFileTool($workspace),
-        ];
+        // Read-only modes get no way to change the workspace. This is enforced by
+        // the tool list rather than by asking the model to behave, so "plan this"
+        // cannot quietly rewrite a file.
+        if ($this->isReadOnlyMode($mode) && ! $web && ! $deepSearch) {
+            return $this->readOnlyTools($workspace);
+        }
+
+        $tools = $this->writeTools($workspace);
 
         $tools = match ($mode) {
             'chat' => [],
-            'code' => [...$tools, new CodingAgent($workspace)],
+            'code', 'agent', 'orchestrate' => [...$tools, new CodingAgent($workspace)],
             'research' => [new ResearchAgent, new DeepSearchAgent],
             'deep-search' => [new DeepSearchAgent, new ResearchAgent],
             'study' => [new StudyAgent, new ResearchAgent],
@@ -326,6 +477,45 @@ class ChatController extends Controller
         // unconfigured install contributes nothing (see App\Mcp\McpTools),
         // so the common path is unchanged.
         return [...$tools, ...McpTools::configured()];
+    }
+
+    /**
+     * Whether a mode is forbidden from changing the workspace.
+     *
+     * Planning and debugging are both investigations: the value is in the
+     * reasoning, and a plan that quietly edits files is worse than no plan.
+     */
+    private function isReadOnlyMode(string $mode): bool
+    {
+        return in_array($mode, ['ask', 'plan', 'debug'], true);
+    }
+
+    /**
+     * Tools that can look at the workspace but not change it.
+     *
+     * @return list<object>
+     */
+    private function readOnlyTools(Workspace $workspace): array
+    {
+        return [
+            new ListFilesTool($workspace),
+            new ReadFileTool($workspace),
+            new SearchFilesTool($workspace),
+        ];
+    }
+
+    /**
+     * The full set of workspace tools, including the ones that write.
+     *
+     * @return list<object>
+     */
+    private function writeTools(Workspace $workspace): array
+    {
+        return [
+            ...$this->readOnlyTools($workspace),
+            new WriteFileTool($workspace),
+            new DeleteFileTool($workspace),
+        ];
     }
 
     /**
@@ -352,6 +542,11 @@ class ChatController extends Controller
     private static function modeCatalog(): array
     {
         return [
+            ['id' => 'ask', 'label' => 'Ask', 'description' => 'A question answered. Reads files, changes nothing.'],
+            ['id' => 'plan', 'label' => 'Plan', 'description' => 'Investigate, then produce a plan. Writes nothing.'],
+            ['id' => 'agent', 'label' => 'Agent', 'description' => 'Write the code and check it works.'],
+            ['id' => 'debug', 'label' => 'Debug', 'description' => 'Diagnose a fault from evidence. Changes nothing.'],
+            ['id' => 'orchestrate', 'label' => 'Orchestrate', 'description' => 'Plan, implement, verify, fix. The whole job.'],
             ['id' => 'chat', 'label' => 'Chat', 'description' => 'Everyday conversation, no tools.'],
             ['id' => 'code', 'label' => 'Code', 'description' => 'Build and edit files in your workspace.'],
             ['id' => 'research', 'label' => 'Research', 'description' => 'Current, source-backed answers from the web.'],
@@ -390,6 +585,39 @@ class ChatController extends Controller
         );
     }
 
+    /**
+     * Reject a chat message sent to a local model that does not answer text.
+     *
+     * Only the local provider is checked. Hosted providers resolve their model
+     * through configuration, which only ever lists models the SDK can send to;
+     * a local file is whatever is in the directory right now, so a selection
+     * saved yesterday can point at a checkpoint that was replaced with an image
+     * or video one. Streaming to it produces an empty reply that reads like a
+     * runtime failure rather than the misselection it is.
+     *
+     * @param  array{provider: string|null, model: string|null}  $selection
+     */
+    private function ensureModelAnswersText(array $selection): void
+    {
+        if ($selection['provider'] !== ModelCatalog::LOCAL_PROVIDER || blank($selection['model'])) {
+            return;
+        }
+
+        $model = $this->registry->find($selection['model']);
+
+        if ($model !== null && ! in_array('text', $model->capabilities(), true)) {
+            throw ValidationException::withMessages([
+                'model' => sprintf(
+                    'The local model "%s" generates %s, not text. Pick a text model to chat.',
+                    $selection['model'],
+                    implode(' or ', array_diff($model->capabilities(), ['text'])),
+                ),
+            ]);
+        }
+    }
+
+    /**
+     * Reject attachments the configured provider would refuse mid-stream.
     /**
      * Reject attachments the configured provider would refuse mid-stream.
      *

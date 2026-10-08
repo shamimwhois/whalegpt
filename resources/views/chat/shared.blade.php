@@ -1,6 +1,8 @@
 @extends('layouts.app')
 
-@section('title', $conversation->title)
+{{-- Escaped at the section, because @yield prints raw: the title comes from a
+     conversation name the author controls and this page is publicly shared. --}}
+@section('title', e($conversation->title))
 
 @section('content')
     <div class="min-h-dvh">
